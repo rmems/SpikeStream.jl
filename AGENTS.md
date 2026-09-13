@@ -18,7 +18,7 @@ Follow the conventions below for all code changes.
 - SpikeStream.jl is a Julia package for spike-stream feature extraction in spiking neural systems (SNNs).
 - Package boundary — these functions belong to SpikeStream.jl:
   - `spike_count`, `spike_density`, `isi_stats`, `detect_bursts`, `windowed_spike_features`, `normalized_feature_vector`
-- Sibling repo: [Limen-Neural/kinetic-signals](https://github.com/Limen-Neural/kinetic-signals) (Rust) owns Hurst, Hawkes, surprise/geometric Brownian motion (GBM), entropy, and volatility.
+- Sibling repo: [rmems/kinetic-signals](https://github.com/rmems/kinetic-signals) (Rust) owns Hurst, Hawkes, surprise/geometric Brownian motion (GBM), entropy, and volatility.
 - Removed from SpikeStream.jl (do not reintroduce): `compute_hurst`, `compute_hawkes`, `compute_gbm_surprise` — now kinetic-signals only.
 - Integration: no foreign-function interface (FFI) today; spike fixtures live in `test/fixtures/spike_vectors.json` (LIM-41); kinetic-signals `shared_vectors.json` is Rust-only.
 - License: dual MIT / Apache-2.0. SPDX headers required on all source files.
@@ -44,7 +44,7 @@ git diff --exit-code  # fails if formatting changed anything
 - Docstrings for all exported functions
 - No comments unless the rationale is non-obvious
 - Prefer editing existing files over creating new ones
-- Keep `Project.toml` `[compat]` entries explicit: `julia = "1.9, 1.10, 1.11, 1.12"`
+- Keep `Project.toml` `[compat]` entries explicit: `julia = "1.13"`
 
 ## Testing
 
@@ -57,7 +57,7 @@ git diff --exit-code  # fails if formatting changed anything
 
 ## CI Workflows
 
-- `.github/workflows/ci.yml` — tests on Julia `min`, `1`, `pre` + format check
+- `.github/workflows/ci.yml` — tests on Julia `1.13.0` (pinned) + format check
 - `.github/workflows/codecov.yml` — code coverage reporting
 - All third-party actions are pinned to commit SHAs (managed by Dependabot)
 - `persist-credentials: false` on all checkout steps
