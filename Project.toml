@@ -16,4 +16,4 @@ test = ["Test", "JSON"]
 [compat]
 Statistics = "1"
 JSON = "0.21, 1"
-julia = "1.9, 1.10, 1.11, 1.12"
+julia = "1.13"

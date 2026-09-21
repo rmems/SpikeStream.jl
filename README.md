@@ -1,12 +1,12 @@
 <p align="center">
-  <img src="docs/logo.png" width="220" alt="Spikenaut">
+  <img src="docs/logo.png" width="220" alt="SpikeStream.jl">
 </p>
 
 <h1 align="center">SpikeStream.jl</h1>
 <p align="center">Spike-stream feature extraction for spiking neural systems</p>
 <p align="center">
-  <a href="https://github.com/Limen-Neural/SpikeStream.jl/actions/workflows/ci.yml" rel="noopener"><img src="https://github.com/Limen-Neural/SpikeStream.jl/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://codecov.io/gh/Limen-Neural/SpikeStream.jl" rel="noopener"><img src="https://codecov.io/gh/Limen-Neural/SpikeStream.jl/branch/main/graph/badge.svg" alt="codecov"></a>
+  <a href="https://github.com/rmems/SpikeStream.jl/actions/workflows/ci.yml" rel="noopener"><img src="https://github.com/rmems/SpikeStream.jl/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://codecov.io/gh/rmems/SpikeStream.jl" rel="noopener"><img src="https://codecov.io/gh/rmems/SpikeStream.jl/branch/main/graph/badge.svg" alt="codecov"></a>
   <a href="LICENSE-MIT" rel="noopener"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <a href="LICENSE-APACHE" rel="noopener"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License: Apache 2.0"></a>
 </p>
@@ -40,16 +40,16 @@ SpikeStream.jl is focused on feature extraction from spike-event streams.
 
 ## Package Boundary
 
-SpikeStream.jl owns spike-stream **feature extraction** only. Kinetic / signal-dynamics APIs live in the Rust sibling [Limen-Neural/kinetic-signals](https://github.com/Limen-Neural/kinetic-signals).
+SpikeStream.jl owns spike-stream **feature extraction** only. Kinetic / signal-dynamics APIs live in the Rust sibling [rmems/kinetic-signals](https://github.com/rmems/kinetic-signals).
 
 | Area | Owner | Notes |
 | --- | --- | --- |
 | `spike_count`, `spike_density`, `isi_stats`, `detect_bursts`, `windowed_spike_features`, `normalized_feature_vector` | **SpikeStream.jl** | Public API of this package |
-| Hurst exponent | [kinetic-signals](https://github.com/Limen-Neural/kinetic-signals) | Formerly transitional `compute_hurst` (removed) |
-| Hawkes intensity | [kinetic-signals](https://github.com/Limen-Neural/kinetic-signals) | Formerly transitional `compute_hawkes` (removed) |
-| Surprise / geometric Brownian motion (GBM) | [kinetic-signals](https://github.com/Limen-Neural/kinetic-signals) | Formerly transitional `compute_gbm_surprise` (removed) |
-| Entropy | [kinetic-signals](https://github.com/Limen-Neural/kinetic-signals) | Not part of SpikeStream.jl |
-| Volatility | [kinetic-signals](https://github.com/Limen-Neural/kinetic-signals) | Not part of SpikeStream.jl |
+| Hurst exponent | [kinetic-signals](https://github.com/rmems/kinetic-signals) | Formerly transitional `compute_hurst` (removed) |
+| Hawkes intensity | [kinetic-signals](https://github.com/rmems/kinetic-signals) | Formerly transitional `compute_hawkes` (removed) |
+| Surprise / geometric Brownian motion (GBM) | [kinetic-signals](https://github.com/rmems/kinetic-signals) | Formerly transitional `compute_gbm_surprise` (removed) |
+| Entropy | [kinetic-signals](https://github.com/rmems/kinetic-signals) | Not part of SpikeStream.jl |
+| Volatility | [kinetic-signals](https://github.com/rmems/kinetic-signals) | Not part of SpikeStream.jl |
 
 ### Integration
 
@@ -75,9 +75,11 @@ vec = normalized_feature_vector(spike_times; t_start=0.0, t_end=0.1, max_density
 
 ## Installation
 
+SpikeStream.jl is not yet registered in the Julia General registry. Install directly from GitHub:
+
 ```julia
 using Pkg
-Pkg.add("SpikeStream")
+Pkg.add(url="https://github.com/rmems/SpikeStream.jl")
 ```
 
 ## License
