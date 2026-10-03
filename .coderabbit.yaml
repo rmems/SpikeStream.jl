@@ -1,0 +1,30 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit config for rmems/SpikeStream.jl.
+language: en-US
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  fail_commit_status: false
+  auto_review:
+    enabled: true
+    drafts: false
+  path_filters:
+  - '!.mimocode/**'
+  - '!.kilo/**'
+  - '!.codex/**'
+  - '!.cursor/**'
+  - '!.vscode/**'
+  path_instructions:
+  - path: '{src,test,benchmark}/**/*.jl'
+    instructions: Julia package code. `[compat] julia = "1.13"`; CI runs Julia 1.13.0. Do not use Base/stdlib APIs newer than the compat floor without raising it. Review for type stability in hot paths (concrete struct field types, no abstractly typed containers, no non-`const` globals, no `Any`-returning branches), avoidable allocations in inner loops, and changes to exported API. Documented output ranges and the frozen fixture `test/fixtures/spike_vectors.json` pin behaviour; changes need README updates. Don't reintroduce `compute_hurst`, `compute_hawkes`, `compute_gbm_surprise` (moved to kinetic-signals).
+  - path: '**/Project.toml'
+    instructions: Julia Project.toml. New `[deps]` entries should get a `[compat]` bound; flag widened or dropped bounds and any UUID change (UUIDs are immutable once registered). Keep `julia = "1.13"` explicit. `Manifest.toml` is gitignored on purpose; don't flag it as missing.
+  - path: .github/workflows/**
+    instructions: GitHub Actions workflows. Keep `permissions:` least-privilege and job commands in sync with the local gates documented in the repo. Most `uses:` are pinned to full commit SHAs; prefer SHA pins for new or bumped actions. Don't flag tag-pinned first-party GitHub actions (REVIEW.md).
+  tools:
+    actionlint:
+      enabled: true
+    yamllint:
+      enabled: true
+    markdownlint:
+      enabled: true
