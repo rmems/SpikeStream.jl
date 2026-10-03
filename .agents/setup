@@ -41,13 +41,18 @@ apt_install curl ca-certificates
 # --- Julia (juliaup) ---
 # ci.yml pins Julia 1.13.0 ([compat] julia = "1.13").
 JULIA_CHANNEL="1.13.0"
+JULIAUP_INSTALLER_SHA256="f6df6bf41ccae382466efdf00848c33670a33ea0030313d8594e676d6b297cf5"
 export PATH="$HOME/.juliaup/bin:$PATH"
 if ! command -v juliaup >/dev/null 2>&1; then
-  curl -fsSL https://install.julialang.org | sh -s -- --yes --default-channel "$JULIA_CHANNEL"
+  installer="$(mktemp)"
+  trap 'rm -f "$installer"' EXIT
+  curl -fsSL https://install.julialang.org -o "$installer"
+  printf '%s  %s\n' "$JULIAUP_INSTALLER_SHA256" "$installer" | sha256sum -c -
+  sh "$installer" --yes --default-channel "$JULIA_CHANNEL"
+  rm -f "$installer"
+  trap - EXIT
 fi
-if ! juliaup status | awk -v ch="$JULIA_CHANNEL" '{for (i = 1; i <= NF; i++) if ($i == ch) found = 1} END {exit !found}'; then
-  juliaup add "$JULIA_CHANNEL"
-fi
+juliaup add "$JULIA_CHANNEL"
 juliaup default "$JULIA_CHANNEL"
 
 # --- Julia dependencies ---
@@ -69,7 +74,11 @@ for dir in "${tool_dirs[@]}"; do
       python* | pip* | activate* | deactivate | Activate.ps1) continue ;;
     esac
     if [ -f "$tool" ] && [ -x "$tool" ]; then
-      $SUDO ln -sfn "$tool" "/usr/local/bin/$name"
+      dest="/usr/local/bin/$name"
+      if [ "$name" != "julia" ] && [ -e "$dest" ] && [ ! -L "$dest" ]; then
+        continue
+      fi
+      $SUDO ln -sfn "$tool" "$dest"
     fi
   done
 done
