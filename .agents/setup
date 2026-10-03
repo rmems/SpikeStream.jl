@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# Amp orb setup for SpikeStream.jl.
+#
+# Amp runs this from the repository root when it builds a project orb snapshot
+# (Debian 12, CPU only: orbs have no GPU). It must finish within 20 minutes and
+# be safe to run more than once. See https://ampcode.com/docs/orbs/customizing
+#
+# Installs only what this repo's CI and manifests need:
+#   - apt: curl, ca-certificates
+#   - juliaup 1.13.0 [default]
+#   - Pkg.instantiate()
+#   - tool directories exposed to later shells (/etc/profile.d + /usr/local/bin links)
+#
+# It ends with a dependency fetch/prebuild, not a test run.
+set -euo pipefail
+
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+SUDO=""
+if [ "$(id -u)" -ne 0 ]; then
+  SUDO="sudo"
+fi
+
+# Install Debian packages that are not already present.
+apt_install() {
+  local missing=() pkg
+  for pkg in "$@"; do
+    if ! dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed"; then
+      missing+=("$pkg")
+    fi
+  done
+  if [ "${#missing[@]}" -gt 0 ]; then
+    $SUDO apt-get -o Acquire::Retries=5 update -qq
+    $SUDO env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --no-install-recommends "${missing[@]}"
+  fi
+}
+
+# --- System packages (curl + CA certs for the installers below) ---
+apt_install curl ca-certificates
+
+# --- Julia (juliaup) ---
+# ci.yml pins Julia 1.13.0 ([compat] julia = "1.13").
+JULIA_CHANNEL="1.13.0"
+JULIAUP_VERSION="1.22.7"
+JULIAUP_INSTALLER_SHA256="2f6cb3beff3e14b78890fb52dc6d44ec2d2a5bf2c703d2d478d6e519c863eae0"
+export PATH="$HOME/.juliaup/bin:$PATH"
+if ! command -v juliaup >/dev/null 2>&1; then
+  installer="$(mktemp)"
+  trap 'rm -f "$installer"' EXIT
+  curl -fsSL "https://julialang-s3.julialang.org/juliaup/bin/juliainstaller-$JULIAUP_VERSION-x86_64-unknown-linux-musl" -o "$installer"
+  printf '%s  %s\n' "$JULIAUP_INSTALLER_SHA256" "$installer" | sha256sum -c -
+  chmod +x "$installer"
+  "$installer" --yes --default-channel "$JULIA_CHANNEL"
+  rm -f "$installer"
+  trap - EXIT
+fi
+juliaup add "$JULIA_CHANNEL"
+juliaup default "$JULIA_CHANNEL"
+
+# --- Julia dependencies ---
+julia --project=. -e 'using Pkg; Pkg.instantiate()'
+
+# --- Expose the tools to later shells ---
+# The PATH exports above last only for this script; Amp starts the agent's shell
+# separately. Login shells get these directories from /etc/profile.d, and every other
+# shell finds the entry points through symlinks in /usr/local/bin (on the default PATH).
+tool_dirs=("$HOME/.juliaup/bin")
+# shellcheck disable=SC2016 # $PATH must expand when the profile is sourced, not now.
+printf 'export PATH="%s:$PATH"\n' "$(IFS=:; echo "${tool_dirs[*]}")" |
+  $SUDO tee /etc/profile.d/amp-orb-SpikeStream.jl.sh >/dev/null
+for dir in "${tool_dirs[@]}"; do
+  [ -d "$dir" ] || continue
+  for tool in "$dir"/*; do
+    name="${tool##*/}"
+    case "$name" in
+      python* | pip* | activate* | deactivate | Activate.ps1) continue ;;
+    esac
+    if [ -f "$tool" ] && [ -x "$tool" ]; then
+      dest="/usr/local/bin/$name"
+      if [ "$name" != "julia" ] && [ -e "$dest" ] && [ ! -L "$dest" ]; then
+        continue
+      fi
+      $SUDO ln -sfn "$tool" "$dest"
+    fi
+  done
+done
+
+echo "Amp orb setup for SpikeStream.jl finished."
