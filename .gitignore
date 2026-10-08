@@ -13,7 +13,10 @@ Manifest.toml
 .mimocode/
 .kilo/
 .codex/
-.cursor/
+.cursor/*
+# Cursor Cloud Agent environment: committed on purpose.
+!.cursor/environment.json
+!.cursor/install.sh
 .vscode/
 .idea/
 .agents/
