@@ -79,7 +79,8 @@ for dir in "${tool_dirs[@]}"; do
     esac
     if [ -f "$tool" ] && [ -x "$tool" ]; then
       dest="/usr/local/bin/$name"
-      if [ "$name" != "julia" ] && [ -e "$dest" ] && [ ! -L "$dest" ]; then
+      # Never replace a real file. Symlinks are refreshed so reruns stay idempotent.
+      if [ -e "$dest" ] && [ ! -L "$dest" ]; then
         continue
       fi
       $SUDO ln -sfn "$tool" "$dest"
