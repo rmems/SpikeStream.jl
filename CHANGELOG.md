@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `windowed_spike_features` builds window starts as `t0 + k*step` from an integer `k`, so float-step drift no longer emits a sliver extra bin or mis-bins times such as `0.3`.
+- `spike_density` uses the observation-window duration when bounds are provided, so a single spike in `[0, 1]` has density `1`.
+- Non-finite spike times (`NaN`, `±Inf`) raise `ArgumentError` on all public APIs.
+- `normalized_feature_vector` sorts the input once and reuses that order for count, density, ISI, and burst features.
+
 ### Changed
 
 - Document package boundary vs kinetic-signals (LIM-214).

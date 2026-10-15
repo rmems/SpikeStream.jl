@@ -1,11 +1,152 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 
+const WindowFeature = @NamedTuple{
+    t_start::Float64,
+    t_end::Float64,
+    count::Int,
+    density::Float64,
+    isi_mean::Float64,
+    isi_cv::Float64,
+    burst_count::Int,
+}
+
+function _sorted_finite_times(spike_times::AbstractVector{<:Real})::Vector{Float64}
+    n = length(spike_times)
+    times = Vector{Float64}(undef, n)
+    @inbounds for i = 1:n
+        t = Float64(spike_times[i])
+        isfinite(t) || throw(ArgumentError("spike times must be finite"))
+        times[i] = t
+    end
+    return sort!(times)
+end
+
+function _spike_count_sorted(
+    times::AbstractVector{Float64};
+    t_start = nothing,
+    t_end = nothing,
+)::Int
+    if isnothing(t_start) && isnothing(t_end)
+        return length(times)
+    end
+
+    start_t = isnothing(t_start) ? -Inf : Float64(t_start)
+    end_t = isnothing(t_end) ? Inf : Float64(t_end)
+    end_t < start_t && return 0
+
+    left = searchsortedfirst(times, start_t)
+    right = searchsortedlast(times, end_t)
+    return max(0, right - left + 1)
+end
+
+function _spike_density_sorted(
+    times::AbstractVector{Float64};
+    t_start = nothing,
+    t_end = nothing,
+)::Float64
+    if isnothing(t_start) && isnothing(t_end)
+        length(times) < 2 && return 0.0
+        t_min = first(times)
+        t_max = last(times)
+    else
+        t_min =
+            isnothing(t_start) ? (isempty(times) ? 0.0 : first(times)) : Float64(t_start)
+        t_max = isnothing(t_end) ? (isempty(times) ? 0.0 : last(times)) : Float64(t_end)
+    end
+
+    duration = t_max - t_min
+    duration <= 0 && return 0.0
+
+    n = _spike_count_sorted(times; t_start = t_min, t_end = t_max)
+    return n / duration
+end
+
+function _n_windows(t0::Float64, t_end::Float64, step::Float64)::Int
+    span = t_end - t0
+    span <= 0 && return 0
+    n = Int(floor(span / step))
+    rem = span - n * step
+    tol = eps(Float64) * max(abs(t0), abs(t_end), abs(step), 1.0) * 32
+    rem > tol && (n += 1)
+    return n
+end
+
+function _window_end(
+    t0::Float64,
+    k::Int,
+    step::Float64,
+    window_size::Float64,
+    t_end::Float64,
+)::Float64
+    ratio = window_size / step
+    nearest = round(ratio)
+    if abs(ratio - nearest) <= 32 * eps(Float64) * max(abs(ratio), 1.0)
+        return min(t0 + (k + Int(nearest)) * step, t_end)
+    end
+    return min(t0 + k * step + window_size, t_end)
+end
+
+function _start_index(t::Float64, t0::Float64, step::Float64)::Int
+    q = (t - t0) / step
+    nearest = round(q)
+    if abs(q - nearest) <= 32 * eps(Float64) * max(abs(q), 1.0)
+        return Int(nearest)
+    end
+    return Int(floor(q))
+end
+
+function _window_span_steps(window_size::Float64, step::Float64)
+    ratio = window_size / step
+    nearest = round(ratio)
+    if abs(ratio - nearest) <= 32 * eps(Float64) * max(abs(ratio), 1.0)
+        return Int(nearest)
+    end
+    return nothing
+end
+
+function _spike_window_index(
+    t::Float64,
+    t0::Float64,
+    step::Float64,
+    n_win::Int,
+    t_end::Float64,
+    include_right_edge::Bool,
+)::Int
+    if t < t0
+        return -1
+    end
+    if t >= t_end
+        return include_right_edge && t <= t_end ? n_win - 1 : n_win
+    end
+    return _start_index(t, t0, step)
+end
+
+function _spike_in_window(
+    t::Float64,
+    k::Int,
+    t0::Float64,
+    step::Float64,
+    n_win::Int,
+    t_end::Float64,
+    cur::Float64,
+    nxt::Float64,
+    include_right_edge::Bool,
+    span_steps::Union{Int,Nothing},
+)::Bool
+    idx = _spike_window_index(t, t0, step, n_win, t_end, include_right_edge)
+    if !isnothing(span_steps)
+        return k <= idx < k + span_steps
+    end
+    t < cur && return false
+    return include_right_edge && k == n_win - 1 ? t <= nxt : t < nxt
+end
+
 """
     spike_count(spike_times; t_start=nothing, t_end=nothing) -> Int
 
 Count spikes in `spike_times`, optionally restricted to `[t_start, t_end]`.
 
-`spike_times` should be numeric timestamps in seconds (or any consistent unit).
+`spike_times` should be finite numeric timestamps in seconds (or any consistent unit).
 When no window is provided, all spikes are counted.
 """
 function spike_count(
@@ -13,18 +154,8 @@ function spike_count(
     t_start = nothing,
     t_end = nothing,
 )::Int
-    if isnothing(t_start) && isnothing(t_end)
-        return length(spike_times)
-    end
-
-    start_t = isnothing(t_start) ? -Inf : Float64(t_start)
-    end_t = isnothing(t_end) ? Inf : Float64(t_end)
-    end_t < start_t && return 0
-
-    times = sort(Float64.(spike_times))
-    left = searchsortedfirst(times, start_t)
-    right = searchsortedlast(times, end_t)
-    return max(0, right - left + 1)
+    times = _sorted_finite_times(spike_times)
+    return _spike_count_sorted(times; t_start = t_start, t_end = t_end)
 end
 
 """
@@ -32,24 +163,19 @@ end
 
 Compute spike density as `spike_count / window_duration`.
 
-Returns `0.0` when fewer than 2 spikes are available to infer a duration,
-or when the requested window has non-positive duration.
+When `t_start` and/or `t_end` provide a positive-duration observation window,
+density is `n / duration` even for 0 or 1 spike. When no window is provided,
+duration is inferred from the first and last spike and is undefined for fewer
+than 2 spikes (returns `0.0`). Returns `0.0` when the window duration is
+non-positive.
 """
 function spike_density(
     spike_times::AbstractVector{<:Real};
     t_start = nothing,
     t_end = nothing,
 )::Float64
-    length(spike_times) < 2 && return 0.0
-    data_min, data_max = extrema(Float64.(spike_times))
-    t_min = isnothing(t_start) ? data_min : Float64(t_start)
-    t_max = isnothing(t_end) ? data_max : Float64(t_end)
-
-    duration = t_max - t_min
-    duration <= 0 && return 0.0
-
-    n = spike_count(spike_times; t_start = t_min, t_end = t_max)
-    return n / duration
+    times = _sorted_finite_times(spike_times)
+    return _spike_density_sorted(times; t_start = t_start, t_end = t_end)
 end
 
 """
@@ -61,10 +187,7 @@ Returns `(mean, std, min, max, cv)` where CV is coefficient of variation `std/me
 All values are non-negative. For fewer than 2 spikes, returns zeros.
 """
 function isi_stats(spike_times::AbstractVector{<:Real})
-    length(spike_times) < 2 &&
-        return (mean = 0.0, std = 0.0, min = 0.0, max = 0.0, cv = 0.0)
-
-    times = sort(Float64.(spike_times))
+    times = _sorted_finite_times(spike_times)
     return isi_stats_sorted(times)
 end
 
@@ -93,9 +216,7 @@ function detect_bursts(
     max_isi::Real = 0.02,
     min_spikes::Int = 3,
 )
-    n = length(spike_times)
-    n < min_spikes && return UnitRange{Int}[]
-    times = sort(Float64.(spike_times))
+    times = _sorted_finite_times(spike_times)
     return detect_bursts_sorted(times; max_isi = max_isi, min_spikes = min_spikes)
 end
 
@@ -147,7 +268,7 @@ function windowed_spike_features(
     window_size <= 0 && throw(ArgumentError("window_size must be > 0"))
     step <= 0 && throw(ArgumentError("step must be > 0"))
 
-    times = sort(Float64.(spike_times))
+    times = _sorted_finite_times(spike_times)
 
     include_right_edge = false
     if isempty(times)
@@ -156,36 +277,66 @@ function windowed_spike_features(
     else
         base_start = isnothing(t_start) ? first(times) : Float64(t_start)
         if isnothing(t_end)
-            base_end = nextfloat(last(times))
+            base_end = last(times)
             include_right_edge = true
         else
             base_end = Float64(t_end)
         end
     end
 
-    base_end < base_start && return NamedTuple[]
+    step_f = Float64(step)
+    n_win = _n_windows(base_start, base_end, step_f)
+    n_win == 0 && return WindowFeature[]
 
-    features = NamedTuple[]
-    cur = base_start
+    features = Vector{WindowFeature}(undef, n_win)
     left = 1
-    right = 0
     n = length(times)
+    ws = Float64(window_size)
+    span_steps = _window_span_steps(ws, step_f)
 
-    while cur < base_end
-        nxt = min(cur + window_size, base_end)
+    for k = 0:(n_win-1)
+        cur = base_start + k * step_f
+        nxt = _window_end(base_start, k, step_f, ws, base_end)
 
-        while left <= n && times[left] < cur
+        while left <= n &&
+              !_spike_in_window(
+            times[left],
+            k,
+            base_start,
+            step_f,
+            n_win,
+            base_end,
+            cur,
+            nxt,
+            include_right_edge,
+            span_steps,
+        )
+            idx = _spike_window_index(
+                times[left],
+                base_start,
+                step_f,
+                n_win,
+                base_end,
+                include_right_edge,
+            )
+            beyond = isnothing(span_steps) ? 1 : span_steps
+            idx >= k + beyond && break
             left += 1
         end
-        right = max(right, left - 1)
-        if include_right_edge && nxt == base_end
-            while right < n && times[right+1] <= nxt
-                right += 1
-            end
-        else
-            while right < n && times[right+1] < nxt
-                right += 1
-            end
+        right = left - 1
+        while right < n && _spike_in_window(
+            times[right+1],
+            k,
+            base_start,
+            step_f,
+            n_win,
+            base_end,
+            cur,
+            nxt,
+            include_right_edge,
+            span_steps,
+        )
+            right += 1
         end
 
         local_count = max(0, right - left + 1)
@@ -195,20 +346,7 @@ function windowed_spike_features(
         stats = isi_stats_sorted(local_times)
         b = length(detect_bursts_sorted(local_times))
 
-        push!(
-            features,
-            (
-                t_start = cur,
-                t_end = nxt,
-                count = local_count,
-                density = d,
-                isi_mean = stats.mean,
-                isi_cv = stats.cv,
-                burst_count = b,
-            ),
-        )
-
-        cur += step
+        features[k+1] = WindowFeature((cur, nxt, local_count, d, stats.mean, stats.cv, b))
     end
 
     return features
@@ -226,15 +364,15 @@ function normalized_feature_vector(
     t_end = nothing,
     max_density::Real = 1000.0,
 )::Vector{Float64}
-    sorted_times = sort(Float64.(spike_times))
+    times = _sorted_finite_times(spike_times)
     start_t = isnothing(t_start) ? -Inf : Float64(t_start)
     end_t = isnothing(t_end) ? Inf : Float64(t_end)
-    left = searchsortedfirst(sorted_times, start_t)
-    right = searchsortedlast(sorted_times, end_t)
-    window_times = left <= right ? sorted_times[left:right] : Float64[]
+    left = searchsortedfirst(times, start_t)
+    right = searchsortedlast(times, end_t)
+    window_times = left <= right ? times[left:right] : Float64[]
 
-    c = spike_count(spike_times; t_start = t_start, t_end = t_end)
-    d = spike_density(spike_times; t_start = t_start, t_end = t_end)
+    c = _spike_count_sorted(times; t_start = t_start, t_end = t_end)
+    d = _spike_density_sorted(times; t_start = t_start, t_end = t_end)
     stats = isi_stats_sorted(window_times)
     b = length(detect_bursts_sorted(window_times))
 
