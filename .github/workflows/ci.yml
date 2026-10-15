@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        version: ['1.13.0']
+        version: ['1.10.12', '1.11.9', '1.12.7', '1.13.0']
         os: [ubuntu-latest]
 
     steps:
