@@ -39,6 +39,13 @@ Base.isfinite(x::ConversionProbe) = isfinite(x.value)
         # explicit observation window is the duration, even for a single spike
         @test spike_density([0.3]; t_start = 0.0, t_end = 1.0) == 1.0
         @test spike_density(Float64[]; t_start = 0.0, t_end = 1.0) == 0.0
+
+        # inferred duration from first/last spike when n ≥ 2
+        @test spike_density([0.0, 1.0]) == 2.0
+        @test spike_count([0.1, 0.2]; t_start = 1.0, t_end = 0.0) == 0
+        @test spike_density([0.5]; t_start = 1.0, t_end = 1.0) == 0.0
+        @test spike_density(Float64[]; t_start = 0.2) == 0.0
+        @test spike_density(Float64[]; t_end = 0.2) == 0.0
     end
 
     @testset "reject non-finite spike times" begin
@@ -116,6 +123,96 @@ Base.isfinite(x::ConversionProbe) = isfinite(x.value)
         @test grid[4].count == 1
         @test grid[4].t_start ≈ 0.3
         @test grid[4].t_end ≈ 0.4
+    end
+
+    @testset "window edges, slivers, and errors" begin
+        @test_throws ArgumentError windowed_spike_features([0.1]; window_size = 0.0)
+        @test_throws ArgumentError windowed_spike_features([0.1]; window_size = -0.1)
+        @test_throws ArgumentError windowed_spike_features(
+            [0.1];
+            window_size = 0.1,
+            step = 0.0,
+        )
+
+        empty_auto = windowed_spike_features(Float64[]; window_size = 0.1)
+        @test isempty(empty_auto)
+        @test isconcretetype(eltype(empty_auto))
+
+        empty_span = windowed_spike_features(
+            Float64[];
+            window_size = 0.1,
+            t_start = 0.0,
+            t_end = 1.0,
+        )
+        @test length(empty_span) == 10
+
+        inverted =
+            windowed_spike_features([0.2]; window_size = 0.1, t_start = 1.0, t_end = 0.0)
+        @test isempty(inverted)
+
+        # real remainder is an extra short window; float slivers are not
+        remainder = windowed_spike_features(
+            Float64[];
+            window_size = 0.1,
+            step = 0.1,
+            t_start = 0.0,
+            t_end = 1.05,
+        )
+        @test length(remainder) == 11
+        @test remainder[end].t_end - remainder[end].t_start ≈ 0.05
+
+        sliver_end = 10.0 + 2e-14
+        sliver = windowed_spike_features(
+            Float64[];
+            window_size = 0.1,
+            step = 0.1,
+            t_start = 0.0,
+            t_end = sliver_end,
+        )
+        @test length(sliver) == 100
+
+        # spikes before t_start are skipped (index -1)
+        before = windowed_spike_features(
+            [-0.4, 0.05, 0.55];
+            window_size = 0.1,
+            step = 0.1,
+            t_start = 0.0,
+            t_end = 0.3,
+        )
+        @test length(before) == 3
+        @test before[1].count == 1
+        @test sum(f.count for f in before) == 1
+
+        # non-integer window/step uses float edges instead of integer span
+        uneven = windowed_spike_features(
+            [0.01, 0.12, 0.28];
+            window_size = 0.15,
+            step = 0.1,
+            t_start = 0.0,
+            t_end = 0.4,
+        )
+        @test length(uneven) == 4
+        @test uneven[1].count == 2
+        @test uneven[2].count == 1
+        @test uneven[3].count == 1
+        @test sum(f.count for f in uneven) >= 3
+
+        # implicit t_end, non-integer ratio, last spike on the closed right edge
+        closed_last = windowed_spike_features([0.0, 0.22]; window_size = 0.15, step = 0.1)
+        @test sum(f.count for f in closed_last) == 2
+        @test closed_last[end].count >= 1
+
+        after_end = windowed_spike_features(
+            [0.05, 1.0];
+            window_size = 0.1,
+            t_start = 0.0,
+            t_end = 0.5,
+        )
+        @test sum(f.count for f in after_end) == 1
+
+        empty_nfv = normalized_feature_vector([0.5]; t_start = 1.0, t_end = 2.0)
+        @test empty_nfv[1] == 0.0
+        @test all(empty_nfv .== 0.0)
     end
 
     @testset "normalized vector" begin
