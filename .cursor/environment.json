@@ -1,0 +1,4 @@
+{
+  "name": "SpikeStream.jl",
+  "install": "bash .cursor/install.sh"
+}
