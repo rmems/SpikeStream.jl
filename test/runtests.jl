@@ -4,6 +4,14 @@ using Test
 using JSON
 using SpikeStream
 
+const CONVERSION_COUNT = Ref(0)
+
+struct ConversionProbe <: Real
+    value::Float64
+end
+Base.Float64(x::ConversionProbe) = (CONVERSION_COUNT[] += 1; x.value)
+Base.isfinite(x::ConversionProbe) = isfinite(x.value)
+
 @testset "SpikeStream" begin
 
     @testset "Package loads" begin
@@ -27,6 +35,28 @@ using SpikeStream
         # partial bounds should be respected
         @test spike_density(spikes; t_start = 0.2) ≈ 3 / (0.9 - 0.2)
         @test spike_density(spikes; t_end = 0.25) ≈ 3 / (0.25 - 0.1)
+
+        # explicit observation window is the duration, even for a single spike
+        @test spike_density([0.3]; t_start = 0.0, t_end = 1.0) == 1.0
+        @test spike_density(Float64[]; t_start = 0.0, t_end = 1.0) == 0.0
+    end
+
+    @testset "reject non-finite spike times" begin
+        for bad in (NaN, Inf, -Inf)
+            times = [0.1, bad, 0.3]
+            @test_throws ArgumentError spike_count(times)
+            @test_throws ArgumentError spike_density(times; t_start = 0.0, t_end = 1.0)
+            @test_throws ArgumentError isi_stats(times)
+            @test_throws ArgumentError detect_bursts(times)
+            @test_throws ArgumentError windowed_spike_features(
+                times;
+                window_size = 0.1,
+                step = 0.1,
+                t_start = 0.0,
+                t_end = 1.0,
+            )
+            @test_throws ArgumentError normalized_feature_vector(times)
+        end
     end
 
     @testset "ISI stats" begin
@@ -70,6 +100,22 @@ using SpikeStream
         # auto t_end includes the final spike
         auto_feats = windowed_spike_features([0.0, 0.5, 1.0]; window_size = 0.5, step = 0.5)
         @test sum(f.count for f in auto_feats) == 3
+
+        # integer-k starts: no float-drift extra sliver, 0.3 bins into [0.3, 0.4)
+        grid = windowed_spike_features(
+            [0.3];
+            window_size = 0.1,
+            step = 0.1,
+            t_start = 0.0,
+            t_end = 10.0,
+        )
+        @test length(grid) == 100
+        @test isconcretetype(eltype(grid))
+        @test grid[end].t_end - grid[end].t_start ≈ 0.1
+        @test grid[3].count == 0
+        @test grid[4].count == 1
+        @test grid[4].t_start ≈ 0.3
+        @test grid[4].t_end ≈ 0.4
     end
 
     @testset "normalized vector" begin
@@ -90,6 +136,14 @@ using SpikeStream
             max_density = 100.0,
         )
         @test vec_window[4] ≈ 1 / 3
+
+        # one conversion/sort of the input (not once per helper)
+        CONVERSION_COUNT[] = 0
+        probed = ConversionProbe[ConversionProbe(t) for t in (0.4, 0.0, 0.2, 0.1)]
+        got = normalized_feature_vector(probed; t_start = 0.0, t_end = 1.0)
+        @test got ==
+              normalized_feature_vector([0.4, 0.0, 0.2, 0.1]; t_start = 0.0, t_end = 1.0)
+        @test CONVERSION_COUNT[] == length(probed)
     end
 
     @testset "frozen spike fixtures (LIM-41)" begin
