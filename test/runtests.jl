@@ -40,6 +40,11 @@ Base.isfinite(x::ConversionProbe) = isfinite(x.value)
         @test spike_density([0.3]; t_start = 0.0, t_end = 1.0) == 1.0
         @test spike_density(Float64[]; t_start = 0.0, t_end = 1.0) == 0.0
 
+        # one inferred edge still needs two spikes (Blocks: [0.999]; t_end=1.0)
+        @test spike_density([0.999]; t_end = 1.0) == 0.0
+        @test spike_density([0.5]; t_start = 0.0) == 0.0
+        @test normalized_feature_vector([0.999]; t_end = 1.0)[2] == 0.0
+
         # inferred duration from first/last spike when n ≥ 2
         @test spike_density([0.0, 1.0]) == 2.0
         @test spike_count([0.1, 0.2]; t_start = 1.0, t_end = 0.0) == 0
