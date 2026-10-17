@@ -258,6 +258,24 @@ Base.isfinite(x::ConversionProbe) = isfinite(x.value)
         @test float_snap[4].t_start ≈ 0.3
         @test float_snap[4].count == 1
         @test float_snap[3].count == 1
+
+        # subtraction error at large t0 is bigger than 32*eps*|q|
+        offset = windowed_spike_features(
+            [100.3];
+            window_size = 0.1,
+            t_start = 100.0,
+            t_end = 101.0,
+        )
+        @test any(f.t_start ≈ 100.3 && f.count == 1 for f in offset)
+        @test all(!(f.t_start ≈ 100.2 && f.count == 1) for f in offset)
+
+        offset_overlap = windowed_spike_features(
+            [16.1, 16.4];
+            window_size = 0.7,
+            step = 0.1,
+            t_end = 16.5,
+        )
+        @test any(f.t_start ≈ 16.4 && f.count == 1 for f in offset_overlap)
     end
 
     @testset "normalized vector" begin

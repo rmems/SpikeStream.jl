@@ -89,7 +89,8 @@ end
 function _start_index(t::Float64, t0::Float64, step::Float64)::Int
     q = (t - t0) / step
     nearest = round(q)
-    if abs(q - nearest) <= 32 * eps(Float64) * max(abs(q), 1.0)
+    scale = max(abs(t), abs(t0), abs(step), 1.0) / step
+    if abs(q - nearest) <= 32 * eps(Float64) * max(abs(q), scale, 1.0)
         return Int(nearest)
     end
     return Int(floor(q))
