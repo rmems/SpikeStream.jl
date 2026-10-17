@@ -141,7 +141,7 @@ function _spike_in_window(
         idx < n_win || return false
         return k <= idx < k + span_steps
     end
-    t < cur && return false
+    idx < k && return false
     return include_right_edge && nxt >= t_end ? t <= nxt : t < nxt
 end
 

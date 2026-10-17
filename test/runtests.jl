@@ -245,6 +245,19 @@ Base.isfinite(x::ConversionProbe) = isfinite(x.value)
         @test sum(f.count for f in snapped) == 1
         @test snapped[end].count == 1
         @test spike_count([0.3]; t_start = 0.0, t_end = 3 * 0.1) == 1
+
+        # non-integer window/step: 0.3 still belongs in the window at 3*0.1
+        float_snap = windowed_spike_features(
+            [0.3];
+            window_size = 0.15,
+            step = 0.1,
+            t_start = 0.0,
+            t_end = 0.6,
+        )
+        @test length(float_snap) == 6
+        @test float_snap[4].t_start ≈ 0.3
+        @test float_snap[4].count == 1
+        @test float_snap[3].count == 1
     end
 
     @testset "normalized vector" begin
