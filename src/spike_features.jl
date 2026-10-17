@@ -44,14 +44,14 @@ function _spike_density_sorted(
     t_start = nothing,
     t_end = nothing,
 )::Float64
-    if isnothing(t_start) && isnothing(t_end)
+    inferred = isnothing(t_start) || isnothing(t_end)
+    if inferred
         length(times) < 2 && return 0.0
-        t_min = first(times)
-        t_max = last(times)
+        t_min = isnothing(t_start) ? first(times) : Float64(t_start)
+        t_max = isnothing(t_end) ? last(times) : Float64(t_end)
     else
-        t_min =
-            isnothing(t_start) ? (isempty(times) ? 0.0 : first(times)) : Float64(t_start)
-        t_max = isnothing(t_end) ? (isempty(times) ? 0.0 : last(times)) : Float64(t_end)
+        t_min = Float64(t_start)
+        t_max = Float64(t_end)
     end
 
     duration = t_max - t_min
@@ -168,11 +168,11 @@ end
 
 Compute spike density as `spike_count / window_duration`.
 
-When `t_start` and/or `t_end` provide a positive-duration observation window,
-density is `n / duration` even for 0 or 1 spike. When no window is provided,
-duration is inferred from the first and last spike and is undefined for fewer
-than 2 spikes (returns `0.0`). Returns `0.0` when the window duration is
-non-positive.
+When both `t_start` and `t_end` are given and the duration is positive,
+density is `n / duration` even for 0 or 1 spike. If either bound is omitted,
+the missing edge is taken from the first or last spike; that inferred
+duration is undefined for fewer than 2 spikes and returns `0.0`. Returns
+`0.0` when the window duration is non-positive.
 """
 function spike_density(
     spike_times::AbstractVector{<:Real};
