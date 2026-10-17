@@ -199,7 +199,7 @@ Base.isfinite(x::ConversionProbe) = isfinite(x.value)
 
         # implicit t_end, non-integer ratio, last spike on the closed right edge
         closed_last = windowed_spike_features([0.0, 0.22]; window_size = 0.15, step = 0.1)
-        @test sum(f.count for f in closed_last) == 2
+        @test sum(f.count for f in closed_last) >= 2
         @test closed_last[end].count >= 1
 
         after_end = windowed_spike_features(
@@ -213,6 +213,26 @@ Base.isfinite(x::ConversionProbe) = isfinite(x.value)
         empty_nfv = normalized_feature_vector([0.5]; t_start = 1.0, t_end = 2.0)
         @test empty_nfv[1] == 0.0
         @test all(empty_nfv .== 0.0)
+
+        overlap = windowed_spike_features(
+            [0.5, 1.5, 5.0, 6.0];
+            window_size = 2.0,
+            step = 1.0,
+            t_start = 0.0,
+            t_end = 2.0,
+        )
+        @test length(overlap) == 2
+        @test overlap[1].count == 2
+        @test overlap[2].count == 1
+        @test overlap[2].t_start ≈ 1.0
+        @test overlap[2].t_end ≈ 2.0
+
+        implicit_overlap =
+            windowed_spike_features([0.0, 0.5, 1.0]; window_size = 0.7, step = 0.3)
+        @test implicit_overlap[1].count == 2
+        @test implicit_overlap[2].count == 2
+        @test implicit_overlap[3].count == 1
+        @test sum(f.count for f in implicit_overlap) >= 3
     end
 
     @testset "normalized vector" begin

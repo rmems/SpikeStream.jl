@@ -27,7 +27,7 @@ SpikeStream.jl is focused on feature extraction from spike-event streams.
 ## Output Ranges
 
 - `spike_count` → integer `>= 0`
-- `spike_density` → real `>= 0`
+- `spike_density` → real `>= 0` (with an explicit positive `[t_start, t_end]`, this is `n / duration` even for 0 or 1 spike)
 - `isi_stats` → all fields non-negative
 - `detect_bursts` → vector of index ranges (possibly empty)
 - `windowed_spike_features`:

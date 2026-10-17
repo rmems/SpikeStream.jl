@@ -13,7 +13,7 @@ const WindowFeature = @NamedTuple{
 function _sorted_finite_times(spike_times::AbstractVector{<:Real})::Vector{Float64}
     n = length(spike_times)
     times = Vector{Float64}(undef, n)
-    @inbounds for i = 1:n
+    for i = 1:n
         t = Float64(spike_times[i])
         isfinite(t) || throw(ArgumentError("spike times must be finite"))
         times[i] = t
@@ -115,8 +115,11 @@ function _spike_window_index(
     if t < t0
         return -1
     end
+    if t == t_end && include_right_edge
+        return n_win - 1
+    end
     if t >= t_end
-        return include_right_edge && t <= t_end ? n_win - 1 : n_win
+        return n_win
     end
     return _start_index(t, t0, step)
 end
@@ -135,10 +138,11 @@ function _spike_in_window(
 )::Bool
     idx = _spike_window_index(t, t0, step, n_win, t_end, include_right_edge)
     if !isnothing(span_steps)
+        idx < n_win || return false
         return k <= idx < k + span_steps
     end
     t < cur && return false
-    return include_right_edge && k == n_win - 1 ? t <= nxt : t < nxt
+    return include_right_edge && nxt >= t_end ? t <= nxt : t < nxt
 end
 
 """
