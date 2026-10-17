@@ -233,6 +233,18 @@ Base.isfinite(x::ConversionProbe) = isfinite(x.value)
         @test implicit_overlap[2].count == 2
         @test implicit_overlap[3].count == 1
         @test sum(f.count for f in implicit_overlap) >= 3
+
+        # 0.3 snaps to 3*0.1; must stay in the last in-range window, not n_win
+        snapped = windowed_spike_features(
+            [0.3];
+            window_size = 0.1,
+            t_start = 0.0,
+            t_end = 3 * 0.1,
+        )
+        @test length(snapped) == 3
+        @test sum(f.count for f in snapped) == 1
+        @test snapped[end].count == 1
+        @test spike_count([0.3]; t_start = 0.0, t_end = 3 * 0.1) == 1
     end
 
     @testset "normalized vector" begin

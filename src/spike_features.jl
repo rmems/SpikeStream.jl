@@ -121,7 +121,7 @@ function _spike_window_index(
     if t >= t_end
         return n_win
     end
-    return _start_index(t, t0, step)
+    return min(_start_index(t, t0, step), n_win - 1)
 end
 
 function _spike_in_window(
