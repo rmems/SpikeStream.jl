@@ -16,11 +16,11 @@ CPU only; installed from the official tarball).
 | `julia --project=. -e 'using Pkg; Pkg.test()'` | verified (212 passed) |
 | `julia -e 'using Pkg; Pkg.activate(; temp=true); Pkg.add("JuliaFormatter"); using JuliaFormatter; format(".", overwrite=true, verbose=true)'` then `git diff --exit-code` | verified (no diff; this is the CI `lint-format` job) |
 | `julia --project=. -e 'using Pkg; Pkg.test(coverage=true)'` | not run (`codecov.yml` runs it; upload needs a secret) |
-| `julia --project=benchmark benchmark/run_benchmarks.jl` | not run (no CI job runs it; `benchmark/Project.toml` needs BenchmarkTools resolved first) |
+| `julia --project=benchmark benchmark/run_benchmarks.jl` | not run (no CI job runs it; `benchmark/Project.toml` lists unregistered `SpikeStream` with no `[sources]` entry, so run `Pkg.develop(path=".")` in that environment first) |
 
 - The formatter command rewrites files in place. Run it, check `git diff`, and keep only intended changes.
 - `Manifest.toml` is gitignored, so `Pkg.test()` resolves fresh each time; there is no committed lockfile.
-- CI (`ci.yml`) runs only Julia `1.13.0` on `ubuntu-latest`.
+- CI (`ci.yml`) runs only Julia `1.13.0` on `ubuntu-latest`; the coverage job (`codecov.yml`) selects Julia `1`.
 
 ## Architecture map
 
