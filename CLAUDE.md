@@ -37,7 +37,7 @@ CPU only; installed from the official tarball).
 - Do not reintroduce `compute_hurst`, `compute_hawkes`, or `compute_gbm_surprise`; they belong to `kinetic-signals`.
 - No FFI today; `JSON` is a test-only dependency (`[extras]`/`[targets]`), and the only runtime dependency is `Statistics`.
 - Output ranges are documented in `README.md`; do not change them without updating the docs (`AGENTS.md`).
-- `Project.toml` pins `julia = "1.13"` in `[compat]`, matching the CI version. Keep it explicit.
+- `Project.toml` sets `julia = "1.13"` in `[compat]`, a lower bound that also admits later 1.x releases (it does not pin 1.13.0, which is what CI runs). Keep it explicit.
 - Every `.jl` file (`src/`, `test/`, `benchmark/`) starts with `# SPDX-License-Identifier: MIT OR Apache-2.0`. Keep it on new files.
 - New exported functions need docstrings (`AGENTS.md`, `REVIEW.md`).
 - Third-party GitHub Actions are pinned to commit SHAs; checkout steps set `persist-credentials: false`.
