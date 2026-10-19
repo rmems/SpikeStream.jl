@@ -4,6 +4,14 @@ using Test
 using JSON
 using SpikeStream
 
+const CONVERSION_COUNT = Ref(0)
+
+struct ConversionProbe <: Real
+    value::Float64
+end
+Base.Float64(x::ConversionProbe) = (CONVERSION_COUNT[] += 1; x.value)
+Base.isfinite(x::ConversionProbe) = isfinite(x.value)
+
 @testset "SpikeStream" begin
 
     @testset "Package loads" begin
@@ -27,6 +35,40 @@ using SpikeStream
         # partial bounds should be respected
         @test spike_density(spikes; t_start = 0.2) ≈ 3 / (0.9 - 0.2)
         @test spike_density(spikes; t_end = 0.25) ≈ 3 / (0.25 - 0.1)
+
+        # explicit observation window is the duration, even for a single spike
+        @test spike_density([0.3]; t_start = 0.0, t_end = 1.0) == 1.0
+        @test spike_density(Float64[]; t_start = 0.0, t_end = 1.0) == 0.0
+
+        # one inferred edge still needs two spikes (Blocks: [0.999]; t_end=1.0)
+        @test spike_density([0.999]; t_end = 1.0) == 0.0
+        @test spike_density([0.5]; t_start = 0.0) == 0.0
+        @test normalized_feature_vector([0.999]; t_end = 1.0)[2] == 0.0
+
+        # inferred duration from first/last spike when n ≥ 2
+        @test spike_density([0.0, 1.0]) == 2.0
+        @test spike_count([0.1, 0.2]; t_start = 1.0, t_end = 0.0) == 0
+        @test spike_density([0.5]; t_start = 1.0, t_end = 1.0) == 0.0
+        @test spike_density(Float64[]; t_start = 0.2) == 0.0
+        @test spike_density(Float64[]; t_end = 0.2) == 0.0
+    end
+
+    @testset "reject non-finite spike times" begin
+        for bad in (NaN, Inf, -Inf)
+            times = [0.1, bad, 0.3]
+            @test_throws ArgumentError spike_count(times)
+            @test_throws ArgumentError spike_density(times; t_start = 0.0, t_end = 1.0)
+            @test_throws ArgumentError isi_stats(times)
+            @test_throws ArgumentError detect_bursts(times)
+            @test_throws ArgumentError windowed_spike_features(
+                times;
+                window_size = 0.1,
+                step = 0.1,
+                t_start = 0.0,
+                t_end = 1.0,
+            )
+            @test_throws ArgumentError normalized_feature_vector(times)
+        end
     end
 
     @testset "ISI stats" begin
@@ -70,6 +112,175 @@ using SpikeStream
         # auto t_end includes the final spike
         auto_feats = windowed_spike_features([0.0, 0.5, 1.0]; window_size = 0.5, step = 0.5)
         @test sum(f.count for f in auto_feats) == 3
+
+        # integer-k starts: no float-drift extra sliver, 0.3 bins into [0.3, 0.4)
+        grid = windowed_spike_features(
+            [0.3];
+            window_size = 0.1,
+            step = 0.1,
+            t_start = 0.0,
+            t_end = 10.0,
+        )
+        @test length(grid) == 100
+        @test isconcretetype(eltype(grid))
+        @test grid[end].t_end - grid[end].t_start ≈ 0.1
+        @test grid[3].count == 0
+        @test grid[4].count == 1
+        @test grid[4].t_start ≈ 0.3
+        @test grid[4].t_end ≈ 0.4
+    end
+
+    @testset "window edges, slivers, and errors" begin
+        @test_throws ArgumentError windowed_spike_features([0.1]; window_size = 0.0)
+        @test_throws ArgumentError windowed_spike_features([0.1]; window_size = -0.1)
+        @test_throws ArgumentError windowed_spike_features(
+            [0.1];
+            window_size = 0.1,
+            step = 0.0,
+        )
+
+        empty_auto = windowed_spike_features(Float64[]; window_size = 0.1)
+        @test isempty(empty_auto)
+        @test isconcretetype(eltype(empty_auto))
+
+        empty_span = windowed_spike_features(
+            Float64[];
+            window_size = 0.1,
+            t_start = 0.0,
+            t_end = 1.0,
+        )
+        @test length(empty_span) == 10
+
+        inverted =
+            windowed_spike_features([0.2]; window_size = 0.1, t_start = 1.0, t_end = 0.0)
+        @test isempty(inverted)
+
+        # real remainder is an extra short window; float slivers are not
+        remainder = windowed_spike_features(
+            Float64[];
+            window_size = 0.1,
+            step = 0.1,
+            t_start = 0.0,
+            t_end = 1.05,
+        )
+        @test length(remainder) == 11
+        @test remainder[end].t_end - remainder[end].t_start ≈ 0.05
+
+        sliver_end = 10.0 + 2e-14
+        sliver = windowed_spike_features(
+            Float64[];
+            window_size = 0.1,
+            step = 0.1,
+            t_start = 0.0,
+            t_end = sliver_end,
+        )
+        @test length(sliver) == 100
+
+        # spikes before t_start are skipped (index -1)
+        before = windowed_spike_features(
+            [-0.4, 0.05, 0.55];
+            window_size = 0.1,
+            step = 0.1,
+            t_start = 0.0,
+            t_end = 0.3,
+        )
+        @test length(before) == 3
+        @test before[1].count == 1
+        @test sum(f.count for f in before) == 1
+
+        # non-integer window/step uses float edges instead of integer span
+        uneven = windowed_spike_features(
+            [0.01, 0.12, 0.28];
+            window_size = 0.15,
+            step = 0.1,
+            t_start = 0.0,
+            t_end = 0.4,
+        )
+        @test length(uneven) == 4
+        @test uneven[1].count == 2
+        @test uneven[2].count == 1
+        @test uneven[3].count == 1
+        @test sum(f.count for f in uneven) >= 3
+
+        # implicit t_end, non-integer ratio, last spike on the closed right edge
+        closed_last = windowed_spike_features([0.0, 0.22]; window_size = 0.15, step = 0.1)
+        @test sum(f.count for f in closed_last) >= 2
+        @test closed_last[end].count >= 1
+
+        after_end = windowed_spike_features(
+            [0.05, 1.0];
+            window_size = 0.1,
+            t_start = 0.0,
+            t_end = 0.5,
+        )
+        @test sum(f.count for f in after_end) == 1
+
+        empty_nfv = normalized_feature_vector([0.5]; t_start = 1.0, t_end = 2.0)
+        @test empty_nfv[1] == 0.0
+        @test all(empty_nfv .== 0.0)
+
+        overlap = windowed_spike_features(
+            [0.5, 1.5, 5.0, 6.0];
+            window_size = 2.0,
+            step = 1.0,
+            t_start = 0.0,
+            t_end = 2.0,
+        )
+        @test length(overlap) == 2
+        @test overlap[1].count == 2
+        @test overlap[2].count == 1
+        @test overlap[2].t_start ≈ 1.0
+        @test overlap[2].t_end ≈ 2.0
+
+        implicit_overlap =
+            windowed_spike_features([0.0, 0.5, 1.0]; window_size = 0.7, step = 0.3)
+        @test implicit_overlap[1].count == 2
+        @test implicit_overlap[2].count == 2
+        @test implicit_overlap[3].count == 1
+        @test sum(f.count for f in implicit_overlap) >= 3
+
+        # 0.3 snaps to 3*0.1; must stay in the last in-range window, not n_win
+        snapped = windowed_spike_features(
+            [0.3];
+            window_size = 0.1,
+            t_start = 0.0,
+            t_end = 3 * 0.1,
+        )
+        @test length(snapped) == 3
+        @test sum(f.count for f in snapped) == 1
+        @test snapped[end].count == 1
+        @test spike_count([0.3]; t_start = 0.0, t_end = 3 * 0.1) == 1
+
+        # non-integer window/step: 0.3 still belongs in the window at 3*0.1
+        float_snap = windowed_spike_features(
+            [0.3];
+            window_size = 0.15,
+            step = 0.1,
+            t_start = 0.0,
+            t_end = 0.6,
+        )
+        @test length(float_snap) == 6
+        @test float_snap[4].t_start ≈ 0.3
+        @test float_snap[4].count == 1
+        @test float_snap[3].count == 1
+
+        # subtraction error at large t0 is bigger than 32*eps*|q|
+        offset = windowed_spike_features(
+            [100.3];
+            window_size = 0.1,
+            t_start = 100.0,
+            t_end = 101.0,
+        )
+        @test any(f.t_start ≈ 100.3 && f.count == 1 for f in offset)
+        @test all(!(f.t_start ≈ 100.2 && f.count == 1) for f in offset)
+
+        offset_overlap = windowed_spike_features(
+            [16.1, 16.4];
+            window_size = 0.7,
+            step = 0.1,
+            t_end = 16.5,
+        )
+        @test any(f.t_start ≈ 16.4 && f.count == 1 for f in offset_overlap)
     end
 
     @testset "normalized vector" begin
@@ -90,6 +301,14 @@ using SpikeStream
             max_density = 100.0,
         )
         @test vec_window[4] ≈ 1 / 3
+
+        # one conversion/sort of the input (not once per helper)
+        CONVERSION_COUNT[] = 0
+        probed = ConversionProbe[ConversionProbe(t) for t in (0.4, 0.0, 0.2, 0.1)]
+        got = normalized_feature_vector(probed; t_start = 0.0, t_end = 1.0)
+        @test got ==
+              normalized_feature_vector([0.4, 0.0, 0.2, 0.1]; t_start = 0.0, t_end = 1.0)
+        @test CONVERSION_COUNT[] == length(probed)
     end
 
     @testset "frozen spike fixtures (LIM-41)" begin

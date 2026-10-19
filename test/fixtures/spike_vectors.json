@@ -166,7 +166,7 @@
           "t_start": 0.0,
           "value": [
             1.0,
-            0.0,
+            0.1,
             0.0,
             0.0
           ]
@@ -175,7 +175,7 @@
         "spike_density": {
           "t_end": 1.0,
           "t_start": 0.0,
-          "value": 0.0
+          "value": 1.0
         },
         "windowed_spike_features": {
           "step": 0.5,
