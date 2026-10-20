@@ -72,7 +72,7 @@ function _n_windows(t0::Float64, t_end::Float64, step::Float64)::Int
 end
 
 function _approx_equal(a::Float64, b::Float64)::Bool
-    return abs(a - b) <= 32 * eps(Float64) * max(abs(a), abs(b), 1.0)
+    return abs(a - b) <= 4 * eps(max(abs(a), abs(b)))
 end
 
 function _window_end(
@@ -122,7 +122,7 @@ function _spike_window_index(
     if t < t0
         return -1
     end
-    if t == t_end && include_right_edge
+    if include_right_edge && (t == t_end || _approx_equal(t, t_end))
         return n_win - 1
     end
     if t >= t_end
