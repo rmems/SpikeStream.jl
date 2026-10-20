@@ -281,6 +281,30 @@ Base.isfinite(x::ConversionProbe) = isfinite(x.value)
             t_end = 16.5,
         )
         @test any(f.t_start ≈ 16.4 && f.count == 1 for f in offset_overlap)
+
+        # non-integer window/step: implicit last spike must not drop when nxt < t_end by 1 ulp
+        drift_last =
+            windowed_spike_features([0.0, 0.45]; window_size = 0.15, step = 0.3)
+        @test length(drift_last) == 2
+        @test drift_last[end].count == 1
+        @test drift_last[end].t_end ≈ 0.45
+        @test sum(f.count for f in drift_last) == 2
+
+        drift_off =
+            windowed_spike_features([0.59, 1.04]; window_size = 0.15, step = 0.3)
+        @test drift_off[end].count == 1
+
+        # non-integer path: spike exactly on a nominal end stays out of [start, end)
+        over_end = windowed_spike_features(
+            [1.4];
+            window_size = 0.3,
+            step = 0.2,
+            t_start = 0.5,
+            t_end = 2.0,
+        )
+        @test sum(f.count for f in over_end) == 1
+        @test all(!(f.t_start ≈ 1.1 && f.count == 1) for f in over_end)
+        @test any(f.t_start ≈ 1.3 && f.count == 1 for f in over_end)
     end
 
     @testset "normalized vector" begin
