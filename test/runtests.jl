@@ -283,15 +283,13 @@ Base.isfinite(x::ConversionProbe) = isfinite(x.value)
         @test any(f.t_start ≈ 16.4 && f.count == 1 for f in offset_overlap)
 
         # non-integer window/step: implicit last spike must not drop when nxt < t_end by 1 ulp
-        drift_last =
-            windowed_spike_features([0.0, 0.45]; window_size = 0.15, step = 0.3)
+        drift_last = windowed_spike_features([0.0, 0.45]; window_size = 0.15, step = 0.3)
         @test length(drift_last) == 2
         @test drift_last[end].count == 1
         @test drift_last[end].t_end ≈ 0.45
         @test sum(f.count for f in drift_last) == 2
 
-        drift_off =
-            windowed_spike_features([0.59, 1.04]; window_size = 0.15, step = 0.3)
+        drift_off = windowed_spike_features([0.59, 1.04]; window_size = 0.15, step = 0.3)
         @test drift_off[end].count == 1
 
         # non-integer path: spike exactly on a nominal end stays out of [start, end)
@@ -305,6 +303,25 @@ Base.isfinite(x::ConversionProbe) = isfinite(x.value)
         @test sum(f.count for f in over_end) == 1
         @test all(!(f.t_start ≈ 1.1 && f.count == 1) for f in over_end)
         @test any(f.t_start ≈ 1.3 && f.count == 1 for f in over_end)
+
+        # 32-ulp equality is wider than window-end rounding at large t0
+        epoch = 1.7e9
+        epoch_feats = windowed_spike_features(
+            [epoch, epoch + 0.15 - 5e-6, epoch + 0.45];
+            window_size = 0.15,
+            step = 0.3,
+        )
+        @test epoch_feats[1].count == 2
+        @test epoch_feats[2].count == 1
+
+        mid = 1000.0
+        mid_feats = windowed_spike_features(
+            [mid, mid + 0.15 - 1e-12, mid + 0.45];
+            window_size = 0.15,
+            step = 0.3,
+        )
+        @test mid_feats[1].count == 2
+        @test mid_feats[2].count == 1
     end
 
     @testset "normalized vector" begin
