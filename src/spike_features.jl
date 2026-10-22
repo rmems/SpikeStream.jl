@@ -71,6 +71,10 @@ function _n_windows(t0::Float64, t_end::Float64, step::Float64)::Int
     return n
 end
 
+function _approx_equal(a::Float64, b::Float64)::Bool
+    return abs(a - b) <= 4 * eps(max(abs(a), abs(b)))
+end
+
 function _window_end(
     t0::Float64,
     k::Int,
@@ -80,10 +84,12 @@ function _window_end(
 )::Float64
     ratio = window_size / step
     nearest = round(ratio)
-    if abs(ratio - nearest) <= 32 * eps(Float64) * max(abs(ratio), 1.0)
-        return min(t0 + (k + Int(nearest)) * step, t_end)
+    e = if abs(ratio - nearest) <= 32 * eps(Float64) * max(abs(ratio), 1.0)
+        t0 + (k + Int(nearest)) * step
+    else
+        t0 + k * step + window_size
     end
-    return min(t0 + k * step + window_size, t_end)
+    return (e >= t_end || _approx_equal(e, t_end)) ? t_end : e
 end
 
 function _start_index(t::Float64, t0::Float64, step::Float64)::Int
@@ -116,7 +122,7 @@ function _spike_window_index(
     if t < t0
         return -1
     end
-    if t == t_end && include_right_edge
+    if include_right_edge && (t == t_end || _approx_equal(t, t_end))
         return n_win - 1
     end
     if t >= t_end
@@ -143,7 +149,11 @@ function _spike_in_window(
         return k <= idx < k + span_steps
     end
     idx < k && return false
-    return include_right_edge && nxt >= t_end ? t <= nxt : t < nxt
+    closed = include_right_edge && (nxt >= t_end || _approx_equal(nxt, t_end))
+    if closed
+        return t <= nxt || _approx_equal(t, nxt) || _approx_equal(t, t_end)
+    end
+    return t < nxt && !_approx_equal(t, nxt)
 end
 
 """
