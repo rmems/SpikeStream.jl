@@ -13,14 +13,22 @@ Primary package boundary:
 - `windowed_spike_features` — rolling/windowed extraction
 - `normalized_feature_vector` — normalized `[0, 1]` feature vector output
 
+Event types:
+- `SpikeEvent` — one spike: time + neuron/unit id
+- `SpikeTrain` — sorted spike times of one unit
+- `spike_events` / `spike_trains` — convert between trains and events
+- `spike_times` / `neuron_id` — accessors; `spike_times(train)` feeds the vector APIs above
+
 """
 module SpikeStream
 
 using Statistics
 
 include("spike_features.jl")
+include("spike_events.jl")
 
 export spike_count, spike_density, isi_stats, detect_bursts
 export windowed_spike_features, normalized_feature_vector
+export SpikeEvent, SpikeTrain, spike_times, neuron_id, spike_events, spike_trains
 
 end # module

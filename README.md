@@ -24,6 +24,17 @@ SpikeStream.jl is focused on feature extraction from spike-event streams.
 - `windowed_spike_features(spike_times; window_size, step)`
 - `normalized_feature_vector(spike_times)`
 
+## Event Types
+
+- `SpikeEvent(time, neuron_id)`: one spike from one unit. Time must be finite; events sort by time, then `neuron_id`.
+- `SpikeTrain(neuron_id, times; sorted=false)`: sorted spike times of one unit. Duplicate timestamps are kept; non-finite times throw `ArgumentError`.
+- `spike_times(train)`, `neuron_id(x)`: accessors. `spike_times(train)` returns the train's own sorted vector (no copy) and can be passed to every function above.
+- `spike_events(train_or_trains)`, `spike_trains(events)`: convert between per-unit trains and a time-sorted event list.
+
+Allocation: `SpikeTrain(id, times)` copies `times` once (and sorts the copy). `SpikeTrain{T,I}(id, v)` aliases a sorted `v::Vector{T}` with zero allocations and throws if `v` is unsorted. `spike_times` never allocates.
+
+The existing functions still take plain `AbstractVector{<:Real}` timestamps; the types are optional.
+
 ## Output Ranges
 
 - `spike_count` → integer `>= 0`
@@ -63,14 +74,29 @@ SpikeStream.jl owns spike-stream **feature extraction** only. Kinetic / signal-d
 ```julia
 using SpikeStream
 
-spike_times = [0.001, 0.005, 0.009, 0.040, 0.042, 0.044, 0.090]
+times = [0.001, 0.005, 0.009, 0.040, 0.042, 0.044, 0.090]
 
-count = spike_count(spike_times)
-density = spike_density(spike_times; t_start=0.0, t_end=0.1)
-stats = isi_stats(spike_times)
-bursts = detect_bursts(spike_times; max_isi=0.004, min_spikes=3)
-windows = windowed_spike_features(spike_times; window_size=0.03, step=0.03)
-vec = normalized_feature_vector(spike_times; t_start=0.0, t_end=0.1, max_density=200.0)
+count = spike_count(times)
+density = spike_density(times; t_start=0.0, t_end=0.1)
+stats = isi_stats(times)
+bursts = detect_bursts(times; max_isi=0.004, min_spikes=3)
+windows = windowed_spike_features(times; window_size=0.03, step=0.03)
+vec = normalized_feature_vector(times; t_start=0.0, t_end=0.1, max_density=200.0)
+```
+
+### Events and trains
+
+```julia
+using SpikeStream
+
+a = SpikeTrain(1, [0.030, 0.010, 0.020])   # unsorted input is sorted on copy
+b = SpikeTrain(2, [0.015, 0.015])           # duplicate timestamps are kept
+
+spike_times(a)                 # [0.010, 0.020, 0.030]
+isi_stats(spike_times(a))      # existing vector APIs work on a train's times
+
+events = spike_events([a, b])  # time-sorted SpikeEvent list across units
+trains = spike_trains(events)  # back to one SpikeTrain per neuron_id
 ```
 
 ## Installation
