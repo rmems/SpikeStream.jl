@@ -349,6 +349,8 @@ Base.isfinite(x::ConversionProbe) = isfinite(x.value)
         mixed = [SpikeEvent(Float32(0.5), Int16(1)), SpikeEvent(0.25, 2)]
         @test eltype(mixed) == SpikeEvent{Float64,Int}
         @test convert(SpikeEvent{Float64,Int}, SpikeEvent(1, Int8(2))) == SpikeEvent(1.0, 2)
+        same = SpikeEvent(1.0, 2)
+        @test convert(SpikeEvent{Float64,Int}, same) === same
     end
 
     @testset "SpikeTrain construction and invariants" begin
