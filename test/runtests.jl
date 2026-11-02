@@ -529,6 +529,10 @@ Base.isfinite(x::ConversionProbe) = isfinite(x.value)
         @test convert(SpikeEvent{Float64,Int}, SpikeEvent(1, Int8(2))) == SpikeEvent(1.0, 2)
         same = SpikeEvent(1.0, 2)
         @test convert(SpikeEvent{Float64,Int}, same) === same
+        # Narrowing to a type where the value overflows must not yield ±Inf.
+        @test_throws ArgumentError SpikeEvent{Float32,Int}(1e300, 1)
+        @test_throws ArgumentError SpikeEvent{Float16,Int}(1e5, 1)
+        @test_throws ArgumentError convert(SpikeEvent{Float32,Int}, SpikeEvent(1e300, 1))
     end
 
     @testset "SpikeTrain construction and invariants" begin
