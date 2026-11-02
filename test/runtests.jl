@@ -23,6 +23,17 @@ Base.isfinite(x::ConversionProbe) = isfinite(x.value)
         @test isdefined(SpikeStream, :detect_bursts)
         @test isdefined(SpikeStream, :windowed_spike_features)
         @test isdefined(SpikeStream, :normalized_feature_vector)
+        for name in (
+            :SpikeEvent,
+            :SpikeTrain,
+            :spike_times,
+            :neuron_id,
+            :spike_events,
+            :spike_trains,
+        )
+            @test Base.isexported(SpikeStream, name)
+            @test haskey(Base.Docs.meta(SpikeStream), Base.Docs.Binding(SpikeStream, name))
+        end
     end
 
     @testset "spike_count + spike_density" begin
@@ -309,6 +320,190 @@ Base.isfinite(x::ConversionProbe) = isfinite(x.value)
         @test got ==
               normalized_feature_vector([0.4, 0.0, 0.2, 0.1]; t_start = 0.0, t_end = 1.0)
         @test CONVERSION_COUNT[] == length(probed)
+    end
+
+    @testset "SpikeEvent" begin
+        ev = SpikeEvent(0.25, 3)
+        @test ev isa SpikeEvent{Float64,Int}
+        @test ev.time == 0.25
+        @test neuron_id(ev) == 3
+
+        @test SpikeEvent(Float32(0.5), Int16(2)) isa SpikeEvent{Float32,Int16}
+        @test SpikeEvent(7, UInt8(1)) isa SpikeEvent{Int,UInt8}
+        @test SpikeEvent(1 // 3, 0) isa SpikeEvent{Rational{Int},Int}
+        @test SpikeEvent{Float64,Int32}(1, 2) isa SpikeEvent{Float64,Int32}
+        @test neuron_id(SpikeEvent(0.0, -4)) == -4
+
+        for bad in (NaN, Inf, -Inf, NaN32)
+            @test_throws ArgumentError SpikeEvent(bad, 1)
+            @test_throws ArgumentError SpikeEvent{Float64,Int}(bad, 1)
+        end
+
+        @test isless(SpikeEvent(0.1, 9), SpikeEvent(0.2, 1))
+        @test isless(SpikeEvent(0.1, 7), SpikeEvent(0.1, 9))
+        @test !isless(SpikeEvent(0.1, 7), SpikeEvent(0.1, 7))
+        @test SpikeEvent(0.1, 7) == SpikeEvent(0.1, 7)
+        @test sort([SpikeEvent(0.2, 1), SpikeEvent(0.1, 2), SpikeEvent(0.1, 1)]) ==
+              [SpikeEvent(0.1, 1), SpikeEvent(0.1, 2), SpikeEvent(0.2, 1)]
+
+        mixed = [SpikeEvent(Float32(0.5), Int16(1)), SpikeEvent(0.25, 2)]
+        @test eltype(mixed) == SpikeEvent{Float64,Int}
+        @test convert(SpikeEvent{Float64,Int}, SpikeEvent(1, Int8(2))) == SpikeEvent(1.0, 2)
+        same = SpikeEvent(1.0, 2)
+        @test convert(SpikeEvent{Float64,Int}, same) === same
+        # Narrowing to a type where the value overflows must not yield ±Inf.
+        @test_throws ArgumentError SpikeEvent{Float32,Int}(1e300, 1)
+        @test_throws ArgumentError SpikeEvent{Float16,Int}(1e5, 1)
+        @test_throws ArgumentError convert(SpikeEvent{Float32,Int}, SpikeEvent(1e300, 1))
+    end
+
+    @testset "SpikeTrain construction and invariants" begin
+        train = SpikeTrain(2, [0.3, 0.1, 0.2])
+        @test train isa SpikeTrain{Float64,Int}
+        @test neuron_id(train) == 2
+        @test spike_times(train) == [0.1, 0.2, 0.3]
+        @test issorted(spike_times(train))
+        @test length(train) == 3
+        @test !isempty(train)
+
+        # caller's vector is neither mutated nor aliased by the copying constructor
+        src = [0.3, 0.1, 0.2]
+        copied = SpikeTrain(1, src)
+        @test src == [0.3, 0.1, 0.2]
+        @test spike_times(copied) !== src
+        sorted_src = [0.1, 0.2]
+        @test spike_times(SpikeTrain(1, sorted_src; sorted = true)) !== sorted_src
+
+        # empty trains
+        empty_train = SpikeTrain(5, Float64[])
+        @test isempty(empty_train)
+        @test length(empty_train) == 0
+        @test spike_times(empty_train) == Float64[]
+        @test SpikeTrain{Float64,Int}(5, Float64[]) == empty_train
+        @test isempty(spike_events(empty_train))
+        @test spike_count(spike_times(empty_train)) == 0
+
+        # duplicate timestamps are preserved
+        dup = SpikeTrain(1, [0.2, 0.1, 0.2, 0.2])
+        @test spike_times(dup) == [0.1, 0.2, 0.2, 0.2]
+        @test length(dup) == 4
+        @test isi_stats(spike_times(dup)).min == 0.0
+
+        # ordering: sorted=true and the parametric constructor reject unsorted input
+        @test_throws ArgumentError SpikeTrain(1, [0.2, 0.1]; sorted = true)
+        @test_throws ArgumentError SpikeTrain{Float64,Int}(1, [0.2, 0.1])
+        @test SpikeTrain(1, [0.1, 0.1, 0.2]; sorted = true) ==
+              SpikeTrain(1, [0.2, 0.1, 0.1])
+
+        # non-finite times rejected on every path
+        for bad in (NaN, Inf, -Inf)
+            @test_throws ArgumentError SpikeTrain(1, [0.1, bad])
+            @test_throws ArgumentError SpikeTrain(1, [0.1, bad]; sorted = true)
+            @test_throws ArgumentError SpikeTrain{Float64,Int}(1, [0.1, bad])
+        end
+
+        # numeric timestamp and id types
+        @test SpikeTrain(1, Float32[0.2, 0.1]) isa SpikeTrain{Float32,Int}
+        @test SpikeTrain(Int16(1), [3, 1, 2]) isa SpikeTrain{Int,Int16}
+        @test spike_times(SpikeTrain(UInt32(1), [3, 1, 2])) == [1, 2, 3]
+        @test spike_times(SpikeTrain(1, [1 // 2, 1 // 4])) == [1 // 4, 1 // 2]
+        @test SpikeTrain{Float64,Int}(1, [1, 2]) isa SpikeTrain{Float64,Int}
+        @test spike_times(SpikeTrain(1, view([0.3, 0.1, 0.2], 1:2))) == [0.1, 0.3]
+
+        # equality and hashing
+        @test SpikeTrain(1, [0.1, 0.2]) == SpikeTrain(1, [0.2, 0.1])
+        @test SpikeTrain(1, [0.1]) != SpikeTrain(2, [0.1])
+        @test hash(SpikeTrain(1, [0.1, 0.2])) == hash(SpikeTrain(1, [0.2, 0.1]))
+        @test length(Set([SpikeTrain(1, [0.1]), SpikeTrain(1, [0.1])])) == 1
+    end
+
+    @testset "SpikeTrain works with timestamp-vector APIs" begin
+        raw = [0.001, 0.005, 0.009, 0.040, 0.042, 0.044, 0.090]
+        train = SpikeTrain(1, reverse(raw))
+        st = spike_times(train)
+        @test spike_count(st) == spike_count(raw)
+        @test spike_density(st; t_start = 0.0, t_end = 0.1) ==
+              spike_density(raw; t_start = 0.0, t_end = 0.1)
+        @test isi_stats(st) == isi_stats(raw)
+        @test detect_bursts(st; max_isi = 0.004) == detect_bursts(raw; max_isi = 0.004)
+        @test windowed_spike_features(st; window_size = 0.03) ==
+              windowed_spike_features(raw; window_size = 0.03)
+        @test normalized_feature_vector(st) == normalized_feature_vector(raw)
+        @test spike_count(spike_times(SpikeTrain(1, Float32[0.1, 0.2]))) == 2
+        @test spike_count(spike_times(SpikeTrain(1, [1, 2, 3]))) == 3
+    end
+
+    @testset "train/event conversions with multiple neuron ids" begin
+        a = SpikeTrain(2, [0.1, 0.3])
+        b = SpikeTrain(1, [0.1, 0.2, 0.2])
+        c = SpikeTrain(7, Float64[])
+
+        ev_a = spike_events(a)
+        @test ev_a == [SpikeEvent(0.1, 2), SpikeEvent(0.3, 2)]
+        @test eltype(ev_a) == SpikeEvent{Float64,Int}
+
+        merged = spike_events([a, b, c])
+        @test eltype(merged) == SpikeEvent{Float64,Int}
+        @test merged == [
+            SpikeEvent(0.1, 1),
+            SpikeEvent(0.1, 2),
+            SpikeEvent(0.2, 1),
+            SpikeEvent(0.2, 1),
+            SpikeEvent(0.3, 2),
+        ]
+        @test issorted(merged)
+        @test isempty(spike_events(SpikeTrain{Float64,Int}[]))
+
+        trains = spike_trains(reverse(merged))
+        @test trains == [b, a]
+        @test map(neuron_id, trains) == [1, 2]
+        @test all(tr -> issorted(spike_times(tr)), trains)
+        @test isempty(spike_trains(SpikeEvent{Float64,Int}[]))
+        @test spike_trains(spike_events([a, b])) == [b, a]
+
+        # mixed numeric types are promoted
+        mixed_trains = [SpikeTrain(Int16(1), Float32[0.5]), SpikeTrain(2, [0.25])]
+        mixed_events = spike_events(mixed_trains)
+        @test eltype(mixed_events) == SpikeEvent{Float64,Int}
+        @test mixed_events == [SpikeEvent(0.25, 2), SpikeEvent(0.5, 1)]
+        @test isempty(spike_events(SpikeTrain[]))
+
+        mixed_in = SpikeEvent[SpikeEvent(Float32(0.5), Int16(1)), SpikeEvent(0.25, 2)]
+        mixed_out = spike_trains(mixed_in)
+        @test eltype(mixed_out) == SpikeTrain{Float64,Int}
+        @test mixed_out == [SpikeTrain(1, [0.5]), SpikeTrain(2, [0.25])]
+        @test isempty(spike_trains(SpikeEvent[]))
+        @test eltype(spike_trains(SpikeEvent{Float32,Int16}[])) == SpikeTrain{Float32,Int16}
+        @test eltype(spike_events(SpikeTrain{Int,UInt8}[])) == SpikeEvent{Int,UInt8}
+
+        int_events = spike_events(SpikeTrain(UInt8(3), [5, 1]))
+        @test int_events == [SpikeEvent(1, UInt8(3)), SpikeEvent(5, UInt8(3))]
+        @test spike_trains(int_events) == [SpikeTrain(UInt8(3), [1, 5])]
+    end
+
+    @testset "conversion allocations" begin
+        v = collect(0.0:0.001:1.0)
+        alias_train(x) = SpikeTrain{Float64,Int}(1, x)
+        copy_train(x) = SpikeTrain(1, x; sorted = true)
+        times_of(tr) = spike_times(tr)
+        alias_train(v)
+        copy_train(v)
+        times_of(alias_train(v))
+
+        # sorted Vector{T} input is aliased: no copy, no allocation
+        @test spike_times(alias_train(v)) === v
+        @test (@allocated alias_train(v)) == 0
+        tr = alias_train(v)
+        @test (@allocated times_of(tr)) == 0
+
+        # copying constructor allocates roughly one vector of length(v)
+        @test (@allocated copy_train(v)) <= sizeof(v) + 256
+
+        # one train -> events is a single output vector
+        events_of(x) = spike_events(x)
+        events_of(tr)
+        @test (@allocated events_of(tr)) <=
+              length(v) * sizeof(SpikeEvent{Float64,Int}) + 256
     end
 
     @testset "frozen spike fixtures (LIM-41)" begin

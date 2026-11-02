@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `SpikeEvent` and `SpikeTrain` core types with `spike_times`, `neuron_id`, `spike_events`, and `spike_trains` helpers ([#29](https://github.com/rmems/SpikeStream.jl/issues/29)). Existing timestamp-vector APIs are unchanged.
+
 ### Fixed
 
 - `windowed_spike_features` builds window starts as `t0 + k*step` from an integer `k`, so float-step drift no longer emits a sliver extra bin or mis-bins times such as `0.3`. Overlapping windows no longer count spikes past an explicit `t_end`, and implicit `t_end` still includes the last spike in every window that ends there.
