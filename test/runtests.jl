@@ -327,6 +327,17 @@ Base.isfinite(x::ConversionProbe) = isfinite(x.value)
         )
         @test mid_feats[1].count == 2
         @test mid_feats[2].count == 1
+
+        # prevfloat(window end) is interior; must not be excluded by end tolerance
+        ulp_in = windowed_spike_features(
+            [prevfloat(0.15)];
+            window_size = 0.15,
+            step = 0.3,
+            t_start = 0.0,
+            t_end = 0.6,
+        )
+        @test sum(f.count for f in ulp_in) == 1
+        @test ulp_in[1].count == 1
     end
 
     @testset "normalized vector" begin

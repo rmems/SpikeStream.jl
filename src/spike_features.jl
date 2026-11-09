@@ -71,8 +71,13 @@ function _n_windows(t0::Float64, t_end::Float64, step::Float64)::Int
     return n
 end
 
-function _approx_equal(a::Float64, b::Float64)::Bool
-    return abs(a - b) <= 4 * eps(max(abs(a), abs(b)))
+function _fp_ulp_band(a::Float64, b::Float64, others::Float64...)::Float64
+    ref = max(maximum(abs, (a, b)), maximum(abs, others), 1.0)
+    return 4 * eps(Float64) * ref
+end
+
+function _approx_equal(a::Float64, b::Float64, others::Float64...)::Bool
+    return abs(a - b) <= _fp_ulp_band(a, b, others...)
 end
 
 function _window_end(
@@ -89,7 +94,8 @@ function _window_end(
     else
         t0 + k * step + window_size
     end
-    return (e >= t_end || _approx_equal(e, t_end)) ? t_end : e
+    snap_tol = _fp_ulp_band(e, t_end, t0, step, window_size)
+    return (e >= t_end || abs(e - t_end) <= snap_tol) ? t_end : e
 end
 
 function _start_index(t::Float64, t0::Float64, step::Float64)::Int
@@ -122,7 +128,7 @@ function _spike_window_index(
     if t < t0
         return -1
     end
-    if include_right_edge && (t == t_end || _approx_equal(t, t_end))
+    if include_right_edge && (t == t_end || _approx_equal(t, t_end, t0, step))
         return n_win - 1
     end
     if t >= t_end
@@ -140,6 +146,7 @@ function _spike_in_window(
     t_end::Float64,
     cur::Float64,
     nxt::Float64,
+    window_size::Float64,
     include_right_edge::Bool,
     span_steps::Union{Int,Nothing},
 )::Bool
@@ -149,11 +156,20 @@ function _spike_in_window(
         return k <= idx < k + span_steps
     end
     idx < k && return false
-    closed = include_right_edge && (nxt >= t_end || _approx_equal(nxt, t_end))
+    closed = include_right_edge && (nxt >= t_end || _approx_equal(nxt, t_end, t0, step))
     if closed
-        return t <= nxt || _approx_equal(t, nxt) || _approx_equal(t, t_end)
+        return t <= nxt ||
+               _approx_equal(t, nxt, cur, step) ||
+               _approx_equal(t, t_end, t0, step)
     end
-    return t < nxt && !_approx_equal(t, nxt)
+    if isnothing(span_steps)
+        hi = min(cur + window_size, t_end)
+        span = hi - cur
+        limit = span > window_size ? prevfloat(hi) : hi
+        left = t >= cur || _approx_equal(t, cur, t0, step)
+        return left && t < limit
+    end
+    return t < nxt
 end
 
 """
@@ -324,6 +340,7 @@ function windowed_spike_features(
             base_end,
             cur,
             nxt,
+            ws,
             include_right_edge,
             span_steps,
         )
@@ -349,6 +366,7 @@ function windowed_spike_features(
             base_end,
             cur,
             nxt,
+            ws,
             include_right_edge,
             span_steps,
         )
