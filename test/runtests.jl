@@ -22,6 +22,10 @@ Base.isfinite(x::ConversionProbe) = isfinite(x.value)
         @test isdefined(SpikeStream, :isi_stats)
         @test isdefined(SpikeStream, :detect_bursts)
         @test isdefined(SpikeStream, :windowed_spike_features)
+        @test isdefined(SpikeStream, :spike_features)
+        @test isdefined(SpikeStream, :SpikeFeatureSnapshot)
+        @test isdefined(SpikeStream, :SpikeFeatureNormalizer)
+        @test isdefined(SpikeStream, :transform)
         @test isdefined(SpikeStream, :normalized_feature_vector)
     end
 
@@ -67,6 +71,7 @@ Base.isfinite(x::ConversionProbe) = isfinite(x.value)
                 t_start = 0.0,
                 t_end = 1.0,
             )
+            @test_throws ArgumentError spike_features(times)
             @test_throws ArgumentError normalized_feature_vector(times)
         end
     end
@@ -309,6 +314,95 @@ Base.isfinite(x::ConversionProbe) = isfinite(x.value)
         @test got ==
               normalized_feature_vector([0.4, 0.0, 0.2, 0.1]; t_start = 0.0, t_end = 1.0)
         @test CONVERSION_COUNT[] == length(probed)
+    end
+
+    @testset "spike features + configurable normalizer" begin
+        spikes = [0.0, 0.01, 0.02, 0.2]
+        snap = spike_features(spikes; t_start = 0.0, t_end = 1.0)
+        @test snap isa SpikeFeatureSnapshot
+        @test snap.count == 4
+        @test snap.density == 4.0
+        @test snap.isi_mean ≥ 0
+        @test snap.isi_cv ≥ 0
+        @test snap.burst_count ≥ 0
+
+        empty_snap = spike_features(Float64[]; t_start = 0.0, t_end = 1.0)
+        @test empty_snap == SpikeFeatureSnapshot(0, 0.0, 0.0, 0.0, 0)
+
+        default_n = SpikeFeatureNormalizer(; max_density = 10.0)
+        @test transform(default_n, snap) == normalized_feature_vector(
+            spikes;
+            t_start = 0.0,
+            t_end = 1.0,
+            max_density = 10.0,
+        )
+        @test transform(default_n, empty_snap) == [0.0, 0.0, 0.0, 0.0]
+
+        # large values clip to 1 under default policy
+        large = SpikeFeatureSnapshot(10, 5000.0, 0.1, 10.0, 10)
+        clipped = transform(SpikeFeatureNormalizer(; max_density = 1000.0), large)
+        @test clipped == [1.0, 1.0, 1.0, 1.0]
+
+        # clip=false leaves unscaled ratios above 1
+        unclipped = transform(
+            SpikeFeatureNormalizer(; max_density = 1000.0, max_isi_cv = 2.0, clip = false),
+            large,
+        )
+        @test unclipped[1] == 1.0
+        @test unclipped[2] ≈ 5.0
+        @test unclipped[3] ≈ 5.0
+        @test unclipped[4] == 1.0
+
+        # custom scales + scaled count mode
+        scaled_n = SpikeFeatureNormalizer(;
+            max_density = 8.0,
+            max_isi_cv = 4.0,
+            max_count = 8.0,
+            count_mode = :scaled,
+            clip = true,
+        )
+        scaled_vec = transform(scaled_n, snap)
+        @test scaled_vec[1] ≈ 4 / 8
+        @test scaled_vec[2] ≈ clamp(snap.density / 8.0, 0.0, 1.0)
+        @test scaled_vec[3] ≈ clamp(snap.isi_cv / 4.0, 0.0, 1.0)
+        @test scaled_vec[4] ≈ clamp(snap.burst_count / max(snap.count, 1), 0.0, 1.0)
+
+        # reproducibility: reconstructing the same kwargs yields the same transform
+        n1 = SpikeFeatureNormalizer(;
+            max_density = 200.0,
+            max_isi_cv = 1.5,
+            max_count = 5.0,
+            count_mode = :scaled,
+            clip = false,
+        )
+        n2 = SpikeFeatureNormalizer(;
+            max_density = 200.0,
+            max_isi_cv = 1.5,
+            max_count = 5.0,
+            count_mode = :scaled,
+            clip = false,
+        )
+        @test n1 == n2
+        @test transform(n1, snap) == transform(n2, snap)
+
+        # compatibility: explicit normalizer kwarg on normalized_feature_vector
+        @test normalized_feature_vector(
+            spikes;
+            t_start = 0.0,
+            t_end = 1.0,
+            normalizer = scaled_n,
+        ) == scaled_vec
+
+        @test_throws ArgumentError SpikeFeatureNormalizer(; count_mode = :bogus)
+        @test_throws ArgumentError SpikeFeatureNormalizer(; max_density = 0.0)
+        @test_throws ArgumentError SpikeFeatureNormalizer(; max_isi_cv = -1.0)
+        @test_throws ArgumentError SpikeFeatureNormalizer(; max_count = 0.0)
+
+        # docstring coverage for new exports
+        @test !isempty(string(@doc SpikeFeatureSnapshot))
+        @test !isempty(string(@doc spike_features))
+        @test !isempty(string(@doc SpikeFeatureNormalizer))
+        @test !isempty(string(@doc transform))
     end
 
     @testset "frozen spike fixtures (LIM-41)" begin

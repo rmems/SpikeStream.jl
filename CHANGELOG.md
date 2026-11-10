@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Canonical raw `SpikeFeatureSnapshot` via `spike_features`, plus explicit
+  `SpikeFeatureNormalizer` / `transform` so scaling is configurable and
+  serializable rather than hard-coded inside feature extraction (#33).
+
 ### Fixed
 
 - `windowed_spike_features` builds window starts as `t0 + k*step` from an integer `k`, so float-step drift no longer emits a sliver extra bin or mis-bins times such as `0.3`. Overlapping windows no longer count spikes past an explicit `t_end`, and implicit `t_end` still includes the last spike in every window that ends there.
@@ -16,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `normalized_feature_vector` is a compatibility wrapper over
+  `spike_features` + `SpikeFeatureNormalizer` (default scales preserve prior
+  `[0, 1]` behavior); prefer the explicit normalizer API for new code (#33).
 - Document package boundary vs kinetic-signals (LIM-214).
 - Add frozen spike feature fixtures and range checks under `test/fixtures/spike_vectors.json` (LIM-41); JSON is a test-only dependency.
 - Pin CI test matrix to Julia `1.13.0` only (dropped `min`/`pre` floating aliases) and narrow `Project.toml`'s `julia` compat bound to `"1.13"` to match what CI actually exercises (#34).

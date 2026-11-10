@@ -11,7 +11,9 @@ Primary package boundary:
 - `isi_stats` — inter-spike interval summary statistics
 - `detect_bursts` — burst detection from short ISIs
 - `windowed_spike_features` — rolling/windowed extraction
-- `normalized_feature_vector` — normalized `[0, 1]` feature vector output
+- `spike_features` / `SpikeFeatureSnapshot` — canonical raw feature snapshot
+- `SpikeFeatureNormalizer` / `transform` — explicit feature normalization
+- `normalized_feature_vector` — compatibility helper (snapshot + default normalizer)
 
 """
 module SpikeStream
@@ -22,5 +24,6 @@ include("spike_features.jl")
 
 export spike_count, spike_density, isi_stats, detect_bursts
 export windowed_spike_features, normalized_feature_vector
+export SpikeFeatureSnapshot, spike_features, SpikeFeatureNormalizer, transform
 
 end # module

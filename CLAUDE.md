@@ -26,7 +26,8 @@ CPU only; installed from the official tarball).
 
 - `src/SpikeStream.jl`: module definition and exports; includes `spike_features.jl`.
 - `src/spike_features.jl`: all feature functions (`spike_count`, `spike_density`, `isi_stats`, `detect_bursts`,
-  `windowed_spike_features`, `normalized_feature_vector`).
+  `windowed_spike_features`, `spike_features`, `SpikeFeatureNormalizer` /
+  `transform`, `normalized_feature_vector`).
 - `test/runtests.jl`: single test file. `test/fixtures/spike_vectors.json`: frozen golden vectors (LIM-41).
 - `benchmark/`: separate project (`Project.toml`) with `run_benchmarks.jl`.
 - `docs/` holds only `logo.png` (used by the README). `CHANGELOG.md` has an `[Unreleased]` section.
