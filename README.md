@@ -34,7 +34,7 @@ policy (`SpikeFeatureNormalizer`) so callers can choose scales for their model o
 dataset without baking experiment-specific constants into extraction.
 
 ```julia
-snap = spike_features(times; t_start=0.0, t_end=0.1)
+snap = spike_features(spike_times; t_start=0.0, t_end=0.1)
 normalizer = SpikeFeatureNormalizer(; max_density=200.0, max_isi_cv=2.0)
 vec = transform(normalizer, snap)
 ```

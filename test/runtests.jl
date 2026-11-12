@@ -397,6 +397,16 @@ Base.isfinite(x::ConversionProbe) = isfinite(x.value)
         @test_throws ArgumentError SpikeFeatureNormalizer(; max_density = 0.0)
         @test_throws ArgumentError SpikeFeatureNormalizer(; max_isi_cv = -1.0)
         @test_throws ArgumentError SpikeFeatureNormalizer(; max_count = 0.0)
+        @test_throws ArgumentError SpikeFeatureNormalizer(; max_density = Inf)
+        @test_throws ArgumentError SpikeFeatureNormalizer(; max_density = NaN)
+        @test_throws ArgumentError SpikeFeatureNormalizer(0.0, 2.0, 1.0, :presence, true)
+        @test_throws ArgumentError SpikeFeatureNormalizer(Inf, 2.0, 1.0, :bogus, true)
+
+        # non-Int Integer min_spikes and degenerate burst inputs
+        @test spike_features(spikes; min_spikes = Int32(3)).burst_count ==
+              spike_features(spikes).burst_count
+        @test spike_features(Float64[]; min_spikes = 0).burst_count == 0
+        @test isempty(detect_bursts(Float64[]; min_spikes = 0))
 
         # docstring coverage for new exports
         @test !isempty(string(@doc SpikeFeatureSnapshot))

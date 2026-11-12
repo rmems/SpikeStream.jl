@@ -231,6 +231,7 @@ function detect_bursts_sorted(
     min_spikes::Int = 3,
 )
     n = length(sorted_spike_times)
+    n == 0 && return UnitRange{Int}[]
     n < min_spikes && return UnitRange{Int}[]
 
     isis = diff(sorted_spike_times)
@@ -408,7 +409,7 @@ function spike_features(
     d = _spike_density_sorted(times; t_start = t_start, t_end = t_end)
     stats = isi_stats_sorted(window_times)
     b = length(
-        detect_bursts_sorted(window_times; max_isi = max_isi, min_spikes = min_spikes),
+        detect_bursts_sorted(window_times; max_isi = max_isi, min_spikes = Int(min_spikes)),
     )
 
     return SpikeFeatureSnapshot(c, d, stats.mean, stats.cv, b)
@@ -431,7 +432,7 @@ length-4 feature vector.
 | burst | `burst_count / max(count, 1)` (relative to the snapshot's spike count) |
 
 When `clip=true` (default), each component is clamped to `[0, 1]`. Scales must be
-positive. No training-data statistics are estimated.
+positive and finite. No training-data statistics are estimated.
 
 The default constructor matches the historical [`normalized_feature_vector`](@ref)
 behavior (`count_mode=:presence`, `max_isi_cv=2.0`, `clip=true`).
@@ -442,6 +443,25 @@ struct SpikeFeatureNormalizer
     max_count::Float64
     count_mode::Symbol
     clip::Bool
+
+    function SpikeFeatureNormalizer(max_density, max_isi_cv, max_count, count_mode, clip)
+        md = Float64(max_density)
+        mc = Float64(max_isi_cv)
+        mcount = Float64(max_count)
+        mode = convert(Symbol, count_mode)
+        isfinite(md) && md > 0 ||
+            throw(ArgumentError("max_density must be a positive finite value"))
+        isfinite(mc) && mc > 0 ||
+            throw(ArgumentError("max_isi_cv must be a positive finite value"))
+        isfinite(mcount) && mcount > 0 ||
+            throw(ArgumentError("max_count must be a positive finite value"))
+        mode === :presence ||
+            mode === :scaled ||
+            throw(
+                ArgumentError("count_mode must be :presence or :scaled, got $(repr(mode))"),
+            )
+        return new(md, mc, mcount, mode, Bool(clip))
+    end
 end
 
 function SpikeFeatureNormalizer(;
@@ -451,20 +471,7 @@ function SpikeFeatureNormalizer(;
     count_mode::Symbol = :presence,
     clip::Bool = true,
 )
-    if count_mode !== :presence && count_mode !== :scaled
-        throw(
-            ArgumentError(
-                "count_mode must be :presence or :scaled, got $(repr(count_mode))",
-            ),
-        )
-    end
-    md = Float64(max_density)
-    mc = Float64(max_isi_cv)
-    mcount = Float64(max_count)
-    md > 0 || throw(ArgumentError("max_density must be positive"))
-    mc > 0 || throw(ArgumentError("max_isi_cv must be positive"))
-    mcount > 0 || throw(ArgumentError("max_count must be positive"))
-    return SpikeFeatureNormalizer(md, mc, mcount, count_mode, clip)
+    return SpikeFeatureNormalizer(max_density, max_isi_cv, max_count, count_mode, clip)
 end
 
 """
