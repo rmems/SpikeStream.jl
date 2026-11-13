@@ -710,6 +710,29 @@ Base.isfinite(x::ConversionProbe) = isfinite(x.value)
             @test_throws ArgumentError SpikeFeatureStream(window = 0.1, step = 0.0)
             @test_throws ArgumentError SpikeFeatureStream(window = 0.1, t_start = NaN)
             @test_throws ArgumentError SpikeFeatureStream(window = 0.1, t_start = Inf)
+            @test_throws ArgumentError SpikeFeatureStream(window = Inf)
+            @test_throws ArgumentError SpikeFeatureStream(window = 1e300, step = 1.0)
+            @test_throws ArgumentError SpikeFeatureStream(window = 0.1, max_isi = NaN)
+        end
+
+        @testset "invalid event times reject before mutating" begin
+            s = SpikeFeatureStream(window = 0.1, step = 0.1, t_start = 0.0)
+            push!(s, SpikeEvent(0.5, 1))
+            # BigFloat time overflows Float64 -> Inf
+            @test_throws ArgumentError push!(s, SpikeEvent(big(10.0)^400, 1))
+            # finite but absurdly far from the anchor -> Int-range window index
+            @test_throws ArgumentError push!(s, SpikeEvent(1e30, 1))
+            # stream still usable afterwards (0.6 lands in window 6, alone)
+            @test push!(s, SpikeEvent(0.6, 1)) == true
+            @test snapshot(s).neurons[1].features.count == 1
+
+            # many pre-anchor events stay evicted (bounded memory)
+            s2 = SpikeFeatureStream(window = 0.1, step = 0.1, t_start = 10.0)
+            for i = 1:1000
+                push!(s2, SpikeEvent(0.001 * i, 1))
+            end
+            @test isempty(s2.times)
+            @test snapshot(s2).neurons == NamedTuple[]
         end
 
         @testset "basic ingest and per-neuron snapshot" begin

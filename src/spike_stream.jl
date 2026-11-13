@@ -34,7 +34,10 @@ State is bounded by the configured window, not the input history: per-neuron
 time buffers are evicted once they fall behind the active window's start, and
 neurons with no remaining in-horizon events are removed. Memory therefore
 grows with the number of *active* units and the spike rate inside the window
-horizon, not with stream length.
+horizon (plus at most one `step` of gap when `step > window`), not with stream
+length. The stream is not thread-safe; concurrent producers need external
+synchronization. Event times must map to a representable window index —
+timestamps absurdly far from the anchor throw `ArgumentError`.
 
 # Examples
 
@@ -83,15 +86,21 @@ function SpikeFeatureStream{I}(;
 ) where {I<:Integer}
     window > 0 || throw(ArgumentError("window must be > 0"))
     step > 0 || throw(ArgumentError("step must be > 0"))
-    if !isnothing(t_start)
-        isfinite(t_start) || throw(ArgumentError("t_start must be finite"))
-    end
+    wf = Float64(window)
+    sf = Float64(step)
+    (isfinite(wf) && wf > 0) || throw(ArgumentError("window must be > 0 and finite"))
+    (isfinite(sf) && sf > 0) || throw(ArgumentError("step must be > 0 and finite"))
+    isfinite(max_isi) || throw(ArgumentError("max_isi must be finite"))
+    isfinite(wf / sf) && abs(wf / sf) < Float64(typemax(Int)) / 8 ||
+        throw(ArgumentError("window/step ratio is too large"))
+    t0 = isnothing(t_start) ? 0.0 : Float64(t_start)
+    isnothing(t_start) || isfinite(t0) || throw(ArgumentError("t_start must be finite"))
     return SpikeFeatureStream{I}(
-        Float64(window),
-        Float64(step),
+        wf,
+        sf,
         Float64(max_isi),
         Int(min_spikes),
-        isnothing(t_start) ? 0.0 : Float64(t_start),
+        t0,
         !isnothing(t_start),
         -Inf,
         Dict{I,Vector{Float64}}(),
@@ -109,8 +118,12 @@ Convenience constructor with `I = Int` for `neuron_id` storage; see
 SpikeFeatureStream(; kwargs...) = SpikeFeatureStream{Int}(; kwargs...)
 
 function _push_event!(stream::SpikeFeatureStream{I}, t::Float64, id::I) where {I<:Integer}
+    isfinite(t) || throw(ArgumentError("spike times must be finite"))
     if stream.anchored
         t < stream.last_time && (stream.dropped += 1; return false)
+        q = (t - stream.t0) / stream.step
+        (isfinite(q) && abs(q) < Float64(typemax(Int)) / 4) ||
+            throw(ArgumentError("event time is too far from the stream anchor"))
     else
         stream.t0 = t
         stream.anchored = true
@@ -132,11 +145,13 @@ end
 function _evict!(stream::SpikeFeatureStream{I}) where {I<:Integer}
     stream.last_time == -Inf && return nothing
     k = max(0, _start_index(stream.last_time, stream.t0, stream.step))
-    k == stream.evict_k && return nothing
-    stream.evict_k = k
     cur = stream.t0 + k * stream.step
     nxt = _stream_window_end(stream.t0, k, stream.step, stream.window)
-    threshold = cur - _fp_ulp_band(cur, nxt, stream.t0, stream.step, stream.window)
+    threshold = cur - 4 * _fp_ulp_band(cur, nxt, stream.t0, stream.step, stream.window)
+    # Same-k eviction is only skippable when the newest event is inside the
+    # window horizon; pre-anchor appends (t < t0) must still be evicted.
+    k == stream.evict_k && stream.last_time >= threshold && return nothing
+    stream.evict_k = k
     for id in collect(keys(stream.times))
         v = stream.times[id]
         i = searchsortedfirst(v, threshold)
@@ -171,9 +186,11 @@ function Base.push!(stream::SpikeFeatureStream{I}, train::SpikeTrain) where {I<:
     id = convert(I, train.neuron_id)
     accepted = 0
     for t in train.times
-        _push_event!(stream, Float64(t), id) && (accepted += 1)
+        if _push_event!(stream, Float64(t), id)
+            accepted += 1
+            _evict!(stream)
+        end
     end
-    _evict!(stream)
     return accepted
 end
 

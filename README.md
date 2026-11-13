@@ -134,8 +134,9 @@ stream = SpikeFeatureStream(window = 0.1, step = 0.01)  # sliding; step == windo
 
 push!(stream, SpikeEvent(0.101, 17))   # true
 push!(stream, SpikeEvent(0.104, 83))
+push!(stream, SpikeEvent(0.109, 17))
 push!(stream, SpikeEvent(0.105, 17))   # false — late/out-of-order, counted in stream.dropped
-push!(stream, SpikeTrain(17, [0.106, 0.108]))  # returns number accepted
+push!(stream, SpikeTrain(17, [0.110, 0.112]))  # returns number accepted
 
 snap = snapshot(stream)   # nothing until the first accepted event
 # (t_start = 0.101, t_end = 0.201, window = 0,
