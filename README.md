@@ -138,9 +138,9 @@ push!(stream, SpikeEvent(0.109, 17))
 push!(stream, SpikeEvent(0.105, 17))   # false — late/out-of-order, counted in stream.dropped
 push!(stream, SpikeTrain(17, [0.110, 0.112]))  # returns number accepted
 
-snap = snapshot(stream)   # nothing until the first accepted event
-# (t_start = 0.101, t_end = 0.201, window = 0,
-#  neurons = [(neuron_id = 17, features = SpikeFeatureSnapshot(...)), ...])
+snap = snapshot(stream)   # active window containing the newest accepted event
+# (t_start, t_end, window, neurons) — neurons sorted by id, each with a
+# SpikeFeatureSnapshot of count/density/isi_mean/isi_cv/burst_count
 ```
 
 - Windows are `[t0 + k*step, t0 + k*step + window)` on a grid anchored at

@@ -949,6 +949,20 @@ Base.isfinite(x::ConversionProbe) = isfinite(x.value)
             @test snap4.neurons == NamedTuple[]
         end
 
+        @testset "gap windows discard unusable events" begin
+            s = SpikeFeatureStream(window = 0.05, step = 0.2, t_start = 0.0)
+            push!(s, SpikeEvent(0.01, 1))
+            push!(s, SpikeEvent(0.08, 1))  # gap: window0 ends 0.05, next starts 0.2
+            push!(s, SpikeEvent(0.12, 1))  # gap
+            @test s.times[1] == [0.01]
+            snap = snapshot(s)
+            @test snap.window == 0
+            @test snap.neurons[1].features.count == 1
+            push!(s, SpikeEvent(0.21, 1))
+            @test s.times[1] == [0.21]
+            @test snapshot(s).neurons[1].features.count == 1
+        end
+
         @testset "non-Int neuron ids and Float32 times" begin
             s = SpikeFeatureStream{Int32}(window = 0.1, step = 0.1)
             push!(s, SpikeEvent(0.05f0, Int32(7)))

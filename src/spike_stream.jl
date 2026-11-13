@@ -32,10 +32,11 @@ across units are normal).
 
 State is bounded by the configured window, not the input history: per-neuron
 time buffers are evicted once they fall behind the active window's start, and
-neurons with no remaining in-horizon events are removed. Memory therefore
-grows with the number of *active* units and the spike rate inside the window
-horizon (plus at most one `step` of gap when `step > window`), not with stream
-length. The stream is not thread-safe; concurrent producers need external
+neurons with no remaining in-horizon events are removed. When `step >
+window`, events falling in the uncovered gap between windows are discarded
+immediately since no window can ever contain them. Memory therefore grows
+with the number of *active* units and the spike rate inside the window
+horizon, not with stream length. The stream is not thread-safe; concurrent producers need external
 synchronization. Event times must map to a representable window index —
 timestamps absurdly far from the anchor throw `ArgumentError`.
 
@@ -148,14 +149,23 @@ function _evict!(stream::SpikeFeatureStream{I}) where {I<:Integer}
     cur = stream.t0 + k * stream.step
     nxt = _stream_window_end(stream.t0, k, stream.step, stream.window)
     threshold = cur - 4 * _fp_ulp_band(cur, nxt, stream.t0, stream.step, stream.window)
-    # Same-k eviction is only skippable when the newest event is inside the
-    # window horizon; pre-anchor appends (t < t0) must still be evicted.
-    k == stream.evict_k && stream.last_time >= threshold && return nothing
+    # Same-k eviction is only skippable for overlapping windows when the
+    # newest event is inside the horizon; pre-anchor appends and gap-mode
+    # upper-bound cleanup must still run.
+    gap_mode = stream.step > stream.window
+    k == stream.evict_k && stream.last_time >= threshold && !gap_mode && return nothing
     stream.evict_k = k
     for id in collect(keys(stream.times))
         v = stream.times[id]
         i = searchsortedfirst(v, threshold)
         i > 1 && deleteat!(v, 1:(i-1))
+        if gap_mode
+            # With step > window, events at or beyond nxt fall in a gap that no
+            # window covers; accepted events are all <= last_time < next cell,
+            # so this suffix can never belong to a window.
+            j = searchsortedfirst(v, nxt)
+            j <= length(v) && deleteat!(v, j:length(v))
+        end
         isempty(v) && delete!(stream.times, id)
     end
     return nothing

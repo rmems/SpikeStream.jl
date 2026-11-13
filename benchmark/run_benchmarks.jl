@@ -42,23 +42,39 @@ for (label, n, dur) in SCALES
 end
 
 # Streaming (GH#30): incremental ingest vs repeated batch recomputation.
-# The stream keeps per-neuron state bounded by the window horizon; the batch
-# baselines rescan the full event history on every call.
-stream_events = sort!(SpikeEvent[SpikeEvent(rand() * 10.0, rand(1:16)) for _ = 1:5_000])
+# Both sides produce per-unit features for the same active window at the same
+# event checkpoints; the batch baseline rescans each unit's full history at
+# every checkpoint, which is the cost the stream avoids.
+stream_events = sort!([SpikeEvent(rand() * 10.0, rand(1:16)) for _ = 1:5_000])
 stream_times = Float64[ev.time for ev in stream_events]
+unit_times = [spike_times(tr) for tr in spike_trains(stream_events)]
+anchor_t = Float64(first(stream_events).time)
 recompute_at = round.(Int, range(500, 5_000, length = 10))
+checkpoint_windows = map(recompute_at) do m
+    k = floor(Int, (Float64(stream_events[m].time) - anchor_t) / 0.1)
+    w0 = anchor_t + k * 0.1
+    (t0 = w0, t1 = w0 + 0.5)
+end
 
 stream_group = BenchmarkGroup()
-stream_group["stream_ingest+snapshot"] = @benchmarkable begin
+stream_group["stream_ingest_only"] = @benchmarkable begin
     s = SpikeFeatureStream(window = 0.5, step = 0.1)
     foreach(ev -> push!(s, ev), $stream_events)
-    snapshot(s)
+end
+stream_group["stream_ingest+snapshots"] = @benchmarkable begin
+    s = SpikeFeatureStream(window = 0.5, step = 0.1)
+    for (i, ev) in enumerate($stream_events)
+        push!(s, ev)
+        i % 500 == 0 && snapshot(s)
+    end
 end
 stream_group["batch_windowed_features"] =
     @benchmarkable windowed_spike_features($stream_times; window_size = 0.5, step = 0.1)
-stream_group["batch_recompute_prefixes"] = @benchmarkable begin
-    for m in $recompute_at
-        spike_features($stream_times[1:m]; t_start = 0.0, t_end = 10.0)
+stream_group["batch_recompute_perunit"] = @benchmarkable begin
+    for cp in $checkpoint_windows
+        for ts in $unit_times
+            spike_features(ts; t_start = cp.t0, t_end = cp.t1)
+        end
     end
 end
 SUITE["stream"] = stream_group
