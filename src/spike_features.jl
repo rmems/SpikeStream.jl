@@ -72,8 +72,8 @@ function _n_windows(t0::Float64, t_end::Float64, step::Float64)::Int
 end
 
 function _fp_ulp_band(a::Float64, b::Float64, others::Float64...)::Float64
-    ref = max(maximum(abs, (a, b)), maximum(abs, others), 1.0)
-    return 4 * eps(Float64) * ref
+    ref = maximum(abs, (a, b, others...))
+    return 4 * eps(Float64) * max(ref, 1.0)
 end
 
 function _approx_equal(a::Float64, b::Float64, others::Float64...)::Bool
@@ -158,13 +158,10 @@ function _spike_in_window(
     idx < k && return false
     closed = include_right_edge && (nxt >= t_end || _approx_equal(nxt, t_end, t0, step))
     if closed
-        return t <= nxt ||
-               _approx_equal(t, nxt, cur, step) ||
-               _approx_equal(t, t_end, t0, step)
+        return t <= nxt
     end
-    hi = min(cur + window_size, t_end)
-    span = hi - cur
-    limit = span > window_size && idx > k ? prevfloat(hi) : hi
+    span = nxt - cur
+    limit = span > window_size && idx > k ? prevfloat(nxt) : nxt
     left = t >= cur || _approx_equal(t, cur, t0, step)
     return left && t < limit
 end
