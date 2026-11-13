@@ -338,6 +338,17 @@ Base.isfinite(x::ConversionProbe) = isfinite(x.value)
         )
         @test sum(f.count for f in ulp_in) == 1
         @test ulp_in[1].count == 1
+
+        # span rounding above window_size must not drop the last-candidate spike
+        gap_edge = windowed_spike_features(
+            [0.3];
+            window_size = 0.2,
+            step = 0.3,
+            t_start = 0.1,
+            t_end = 1.0,
+        )
+        @test sum(f.count for f in gap_edge) == 1
+        @test gap_edge[1].count == 1
     end
 
     @testset "normalized vector" begin

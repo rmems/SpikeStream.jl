@@ -162,14 +162,11 @@ function _spike_in_window(
                _approx_equal(t, nxt, cur, step) ||
                _approx_equal(t, t_end, t0, step)
     end
-    if isnothing(span_steps)
-        hi = min(cur + window_size, t_end)
-        span = hi - cur
-        limit = span > window_size ? prevfloat(hi) : hi
-        left = t >= cur || _approx_equal(t, cur, t0, step)
-        return left && t < limit
-    end
-    return t < nxt
+    hi = min(cur + window_size, t_end)
+    span = hi - cur
+    limit = span > window_size && idx > k ? prevfloat(hi) : hi
+    left = t >= cur || _approx_equal(t, cur, t0, step)
+    return left && t < limit
 end
 
 """
