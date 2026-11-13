@@ -533,6 +533,10 @@ Base.isfinite(x::ConversionProbe) = isfinite(x.value)
         @test_throws ArgumentError SpikeEvent{Float32,Int}(1e300, 1)
         @test_throws ArgumentError SpikeEvent{Float16,Int}(1e5, 1)
         @test_throws ArgumentError convert(SpikeEvent{Float32,Int}, SpikeEvent(1e300, 1))
+        # NaN/±Inf raise ArgumentError even when T cannot represent them
+        for bad in (NaN, Inf, -Inf)
+            @test_throws ArgumentError SpikeEvent{Int,Int}(bad, 1)
+        end
     end
 
     @testset "SpikeTrain construction and invariants" begin
@@ -578,6 +582,10 @@ Base.isfinite(x::ConversionProbe) = isfinite(x.value)
             @test_throws ArgumentError SpikeTrain(1, [0.1, bad])
             @test_throws ArgumentError SpikeTrain(1, [0.1, bad]; sorted = true)
             @test_throws ArgumentError SpikeTrain{Float64,Int}(1, [0.1, bad])
+        end
+        # NaN raises ArgumentError (not InexactError) even when T cannot represent it
+        for bad in (NaN, Inf, -Inf)
+            @test_throws ArgumentError SpikeTrain{Int,Int}(1, [0.1, bad])
         end
 
         # numeric timestamp and id types

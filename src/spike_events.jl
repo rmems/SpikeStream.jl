@@ -28,8 +28,10 @@ struct SpikeEvent{T<:Real,I<:Integer}
     neuron_id::I
 
     function SpikeEvent{T,I}(time::Real, neuron_id::Integer) where {T<:Real,I<:Integer}
-        # Convert first: narrowing (e.g. Float64 -> Float32) can turn a finite
-        # input into ±Inf, so the check must see the stored value.
+        # Check the input first so NaN/±Inf raise ArgumentError even when T
+        # cannot represent them; narrowing can also turn a finite input into
+        # ±Inf, so the converted value is checked too.
+        isfinite(time) || throw(ArgumentError("spike times must be finite"))
         t = convert(T, time)
         isfinite(t) || throw(ArgumentError("spike times must be finite"))
         return new{T,I}(t, neuron_id)
@@ -101,6 +103,9 @@ struct SpikeTrain{T<:Real,I<:Integer}
         neuron_id::Integer,
         times::AbstractVector{<:Real},
     ) where {T<:Real,I<:Integer}
+        for t in times
+            isfinite(t) || throw(ArgumentError("spike times must be finite"))
+        end
         v = convert(Vector{T}, times)
         _check_train_times(v)
         return new{T,I}(neuron_id, v)
