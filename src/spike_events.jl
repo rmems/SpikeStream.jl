@@ -127,7 +127,7 @@ function _check_train_times(times::AbstractVector{<:Real})
     for i in eachindex(times)
         t = times[i]
         isfinite(t) || throw(ArgumentError("spike times must be finite"))
-        if i > firstindex(times) && t < times[prevind(times, i)]
+        if i > firstindex(times) && isless(t, times[prevind(times, i)])
             throw(ArgumentError("SpikeTrain times must be sorted in non-decreasing order"))
         end
     end

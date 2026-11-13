@@ -577,6 +577,11 @@ Base.isfinite(x::ConversionProbe) = isfinite(x.value)
         @test SpikeTrain(1, [0.1, 0.1, 0.2]; sorted = true) ==
               SpikeTrain(1, [0.2, 0.1, 0.1])
 
+        # sortedness follows isless so stored order matches SpikeEvent ordering
+        @test_throws ArgumentError SpikeTrain(1, [0.0, -0.0]; sorted = true)
+        @test_throws ArgumentError SpikeTrain{Float64,Int}(1, [0.0, -0.0])
+        @test issorted(spike_times(SpikeTrain(1, [0.0, -0.0])))
+
         # non-finite times rejected on every path
         for bad in (NaN, Inf, -Inf)
             @test_throws ArgumentError SpikeTrain(1, [0.1, bad])
