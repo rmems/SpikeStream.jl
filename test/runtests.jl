@@ -2,6 +2,7 @@
 
 using Test
 using JSON
+using Random
 using SpikeStream
 
 const CONVERSION_COUNT = Ref(0)
@@ -34,6 +35,8 @@ Base.isfinite(x::ConversionProbe) = isfinite(x.value)
             :neuron_id,
             :spike_events,
             :spike_trains,
+            :SpikeFeatureStream,
+            :snapshot,
         )
             @test Base.isexported(SpikeStream, name)
             @test haskey(Base.Docs.meta(SpikeStream), Base.Docs.Binding(SpikeStream, name))
@@ -695,6 +698,279 @@ Base.isfinite(x::ConversionProbe) = isfinite(x.value)
         events_of(tr)
         @test (@allocated events_of(tr)) <=
               length(v) * sizeof(SpikeEvent{Float64,Int}) + 256
+    end
+
+    @testset "SpikeFeatureStream" begin
+        @testset "empty and validation" begin
+            s = SpikeFeatureStream(window = 0.1)
+            @test snapshot(s) === nothing
+
+            @test_throws ArgumentError SpikeFeatureStream(window = 0.0)
+            @test_throws ArgumentError SpikeFeatureStream(window = -1.0)
+            @test_throws ArgumentError SpikeFeatureStream(window = 0.1, step = 0.0)
+            @test_throws ArgumentError SpikeFeatureStream(window = 0.1, t_start = NaN)
+            @test_throws ArgumentError SpikeFeatureStream(window = 0.1, t_start = Inf)
+            @test_throws ArgumentError SpikeFeatureStream(window = Inf)
+            @test_throws ArgumentError SpikeFeatureStream(window = 1e300, step = 1.0)
+            @test_throws ArgumentError SpikeFeatureStream(window = 0.1, max_isi = NaN)
+        end
+
+        @testset "invalid event times reject before mutating" begin
+            s = SpikeFeatureStream(window = 0.1, step = 0.1, t_start = 0.0)
+            push!(s, SpikeEvent(0.5, 1))
+            # BigFloat time overflows Float64 -> Inf
+            @test_throws ArgumentError push!(s, SpikeEvent(big(10.0)^400, 1))
+            # finite but absurdly far from the anchor -> Int-range window index
+            @test_throws ArgumentError push!(s, SpikeEvent(1e30, 1))
+            # stream still usable afterwards (0.6 lands in window 6, alone)
+            @test push!(s, SpikeEvent(0.6, 1)) == true
+            @test snapshot(s).neurons[1].features.count == 1
+
+            # many pre-anchor events stay evicted (bounded memory)
+            s2 = SpikeFeatureStream(window = 0.1, step = 0.1, t_start = 10.0)
+            for i = 1:1000
+                push!(s2, SpikeEvent(0.001 * i, 1))
+            end
+            @test isempty(s2.times)
+            @test snapshot(s2).neurons == NamedTuple[]
+        end
+
+        @testset "basic ingest and per-neuron snapshot" begin
+            s = SpikeFeatureStream(window = 0.1, step = 0.01)
+            @test push!(s, SpikeEvent(0.101, 17)) == true
+            @test push!(s, SpikeEvent(0.104, 83)) == true
+            @test push!(s, SpikeEvent(0.109, 17)) == true
+
+            snap = snapshot(s)
+            @test snap !== nothing
+            @test snap.t_start == 0.101
+            @test snap.t_end == 0.201
+            @test snap.window == 0
+            @test length(snap.neurons) == 2
+            @test [row.neuron_id for row in snap.neurons] == [17, 83]
+
+            row17 = snap.neurons[1]
+            @test row17.features.count == 2
+            @test row17.features.density == 20.0
+            @test row17.features.isi_mean ≈ 0.008
+            row83 = snap.neurons[2]
+            @test row83.features.count == 1
+            @test row83.features.density == 10.0
+            @test row83.features.isi_mean == 0.0
+        end
+
+        @testset "late and out-of-order events" begin
+            s = SpikeFeatureStream(window = 0.1, step = 0.1, t_start = 0.0)
+            @test push!(s, SpikeEvent(0.2, 1)) == true
+            @test push!(s, SpikeEvent(0.1, 1)) == false
+            @test push!(s, SpikeEvent(0.15, 1)) == false
+            @test s.dropped == 2
+            @test push!(s, SpikeEvent(0.2, 2)) == true  # equal time is fine
+            @test s.dropped == 2
+
+            snap = snapshot(s)
+            @test snap.window == 2
+            @test snap.t_start == 0.2
+            @test [row.neuron_id for row in snap.neurons] == [1, 2]
+            @test snap.neurons[1].features.count == 1
+        end
+
+        @testset "tumbling windows match batch spike_features" begin
+            rng = MersenneTwister(42)
+            events = SpikeEvent[]
+            for id in (1, 2, 3)
+                t = 0.0
+                while t < 2.0
+                    t += 0.005 + rand(rng) * 0.045
+                    push!(events, SpikeEvent(t, id))
+                end
+            end
+            sort!(events)
+            anchor = Float64(first(events).time)
+
+            s = SpikeFeatureStream(window = 0.25, step = 0.25)
+            by_window = Dict{Int,NamedTuple}()
+            for ev in events
+                push!(s, ev)
+                snap = snapshot(s)
+                snap === nothing || (by_window[snap.window] = snap)
+            end
+            @test length(by_window) >= 6
+
+            for (k, snap) in by_window
+                cur, nxt = snap.t_start, snap.t_end
+                @test cur ≈ anchor + 0.25 * k
+                @test nxt ≈ cur + 0.25
+                for row in snap.neurons
+                    id = row.neuron_id
+                    ts = sort!(
+                        Float64[
+                            ev.time for
+                            ev in events if ev.neuron_id == id && cur <= ev.time < nxt
+                        ],
+                    )
+                    @test !isempty(ts)
+                    ref = spike_features(ts; t_start = cur, t_end = nxt)
+                    @test row.features == ref
+                end
+                # every accepted event in the window must appear under its unit
+                expected_ids =
+                    sort!(unique(ev.neuron_id for ev in events if cur <= ev.time < nxt))
+                @test [row.neuron_id for row in snap.neurons] == expected_ids
+            end
+        end
+
+        @testset "sliding windows: final snapshot matches batch" begin
+            rng = MersenneTwister(7)
+            events = SpikeEvent[]
+            for id in (10, 20)
+                t = 0.0
+                while t < 1.0
+                    t += 0.01 + rand(rng) * 0.07
+                    push!(events, SpikeEvent(t, id))
+                end
+            end
+            sort!(events)
+
+            s = SpikeFeatureStream(window = 0.2, step = 0.05)
+            for ev in events
+                push!(s, ev)
+            end
+            snap = snapshot(s)
+            @test snap !== nothing
+            cur, nxt = snap.t_start, snap.t_end
+            @test nxt - cur ≈ 0.2
+
+            for row in snap.neurons
+                id = row.neuron_id
+                ts = sort!(
+                    Float64[
+                        ev.time for
+                        ev in events if ev.neuron_id == id && cur <= ev.time < nxt
+                    ],
+                )
+                ref = spike_features(ts; t_start = cur, t_end = nxt)
+                @test row.features == ref
+            end
+        end
+
+        @testset "window boundary ownership" begin
+            # spike exactly on a step boundary belongs to the later window
+            s = SpikeFeatureStream(window = 0.1, step = 0.1, t_start = 0.0)
+            push!(s, SpikeEvent(0.1, 1))
+            snap = snapshot(s)
+            @test snap.window == 1
+            @test snap.t_start == 0.1
+            @test snap.neurons[1].features.count == 1
+
+            # sliding window: event just below the end stays in the earlier
+            # window only when no later step cell owns it
+            s2 = SpikeFeatureStream(window = 0.15, step = 0.1, t_start = 0.0)
+            push!(s2, SpikeEvent(0.14, 1))
+            snap2 = snapshot(s2)
+            @test snap2.window == 1
+            @test snap2.t_start ≈ 0.1
+            @test snap2.t_end ≈ 0.25
+            @test snap2.neurons[1].features.count == 1
+        end
+
+        @testset "push! with SpikeTrain and custom burst params" begin
+            s = SpikeFeatureStream(window = 0.1, step = 0.1; max_isi = 0.05, min_spikes = 2)
+            train = SpikeTrain(5, [0.02, 0.03, 0.04, 0.11])
+            @test push!(s, train) == 4
+            snap = snapshot(s)
+            @test snap.window == 0
+            @test snap.neurons[1].neuron_id == 5
+            @test snap.neurons[1].features.count == 4
+            # ISIs: 0.01, 0.01, 0.07 -> one burst of 3 with max_isi=0.05, min_spikes=2
+            @test snap.neurons[1].features.burst_count == 1
+
+            # a late head is dropped while the newer tail is accepted
+            train2 = SpikeTrain(5, [0.05, 0.5])
+            @test push!(s, train2) == 1
+            @test s.dropped == 1
+            snap2 = snapshot(s)
+            @test snap2.window == 4  # (0.5 - 0.02) / 0.1 -> 4
+            @test snap2.neurons[1].features.count == 1
+        end
+
+        @testset "bounded memory on long streams" begin
+            rng = MersenneTwister(123)
+            s = SpikeFeatureStream(window = 0.05, step = 0.05)
+            n_events = 0
+            for i = 1:20000
+                id = rand(rng, 1:50)
+                t = 0.001 * i + rand(rng) * 0.0005
+                # keep global order by construction: t increases with i
+                push!(s, SpikeEvent(t, id))
+                n_events += 1
+            end
+            buffered = sum(length, values(s.times))
+            @test buffered <= 50 * 4  # ~50 units x events inside one 0.05 window horizon
+            @test n_events == 20000
+            @test length(s.times) <= 50
+            snap = snapshot(s)
+            @test snap !== nothing
+        end
+
+        @testset "determinism and t_start anchoring" begin
+            events = [
+                SpikeEvent(0.35, 1),
+                SpikeEvent(0.36, 2),
+                SpikeEvent(0.37, 1),
+                SpikeEvent(0.55, 2),
+                SpikeEvent(0.56, 1),
+            ]
+            s1 = SpikeFeatureStream(window = 0.1, step = 0.1; t_start = 0.0)
+            s2 = SpikeFeatureStream(window = 0.1, step = 0.1; t_start = 0.0)
+            for ev in events
+                push!(s1, ev)
+                push!(s2, ev)
+            end
+            @test snapshot(s1) == snapshot(s2)
+            snap = snapshot(s1)
+            @test snap.window == 5  # 0.56 -> floor((0.56-0.0)/0.1)
+            @test snap.t_start ≈ 0.5
+
+            # implicit anchor: first event sets t0
+            s3 = SpikeFeatureStream(window = 0.1, step = 0.1)
+            for ev in events
+                push!(s3, ev)
+            end
+            snap3 = snapshot(s3)
+            @test snap3.t_start ≈ 0.55
+            @test snap3.window == 2  # (0.56-0.35)/0.1 -> 2
+
+            # events before t_start are accepted but outside every window
+            s4 = SpikeFeatureStream(window = 0.1, step = 0.1; t_start = 1.0)
+            push!(s4, SpikeEvent(0.5, 1))
+            snap4 = snapshot(s4)
+            @test snap4.window == 0
+            @test snap4.neurons == NamedTuple[]
+        end
+
+        @testset "gap windows discard unusable events" begin
+            s = SpikeFeatureStream(window = 0.05, step = 0.2, t_start = 0.0)
+            push!(s, SpikeEvent(0.01, 1))
+            push!(s, SpikeEvent(0.08, 1))  # gap: window0 ends 0.05, next starts 0.2
+            push!(s, SpikeEvent(0.12, 1))  # gap
+            @test s.times[1] == [0.01]
+            snap = snapshot(s)
+            @test snap.window == 0
+            @test snap.neurons[1].features.count == 1
+            push!(s, SpikeEvent(0.21, 1))
+            @test s.times[1] == [0.21]
+            @test snapshot(s).neurons[1].features.count == 1
+        end
+
+        @testset "non-Int neuron ids and Float32 times" begin
+            s = SpikeFeatureStream{Int32}(window = 0.1, step = 0.1)
+            push!(s, SpikeEvent(0.05f0, Int32(7)))
+            push!(s, SpikeEvent(0.06f0, Int32(3)))
+            snap = snapshot(s)
+            @test [row.neuron_id for row in snap.neurons] == Int32[3, 7]
+            @test snap.neurons[2].features.count == 1
+        end
     end
 
     @testset "frozen spike fixtures (LIM-41)" begin

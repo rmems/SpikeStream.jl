@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SpikeFeatureNormalizer` / `transform` so scaling is configurable and
   serializable rather than hard-coded inside feature extraction (#33).
 - `SpikeEvent` and `SpikeTrain` core types with `spike_times`, `neuron_id`, `spike_events`, and `spike_trains` helpers ([#29](https://github.com/rmems/SpikeStream.jl/issues/29)). Existing timestamp-vector APIs are unchanged.
+- `SpikeFeatureStream`: bounded-memory incremental ingest of `SpikeEvent`s (and `SpikeTrain`s) emitting per-unit `SpikeFeatureSnapshot`s over stepped windows via `snapshot` ([#30](https://github.com/rmems/SpikeStream.jl/issues/30)). Late/out-of-order events are dropped and counted; window semantics match `windowed_spike_features`.
 
 ### Fixed
 
