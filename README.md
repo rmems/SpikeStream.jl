@@ -76,7 +76,7 @@ SpikeStream.jl owns spike-stream **feature extraction** only. Kinetic / signal-d
 
 | Area | Owner | Notes |
 | --- | --- | --- |
-| `spike_count`, `spike_density`, `isi_stats`, `detect_bursts`, `windowed_spike_features`, `spike_features`, `SpikeFeatureNormalizer` / `transform`, `normalized_feature_vector` | **SpikeStream.jl** | Public API of this package |
+| `spike_count`, `spike_density`, `isi_stats`, `detect_bursts`, `windowed_spike_features`, `spike_features`, `SpikeFeatureNormalizer` / `transform`, `normalized_feature_vector`, `SpikeFeatureStream` / `snapshot` | **SpikeStream.jl** | Public API of this package |
 | Hurst exponent | [kinetic-signals](https://github.com/rmems/kinetic-signals) | Formerly transitional `compute_hurst` (removed) |
 | Hawkes intensity | [kinetic-signals](https://github.com/rmems/kinetic-signals) | Formerly transitional `compute_hawkes` (removed) |
 | Surprise / geometric Brownian motion (GBM) | [kinetic-signals](https://github.com/rmems/kinetic-signals) | Formerly transitional `compute_gbm_surprise` (removed) |
@@ -122,6 +122,39 @@ isi_stats(spike_times(a))      # existing vector APIs work on a train's times
 events = spike_events([a, b])  # time-sorted SpikeEvent list across units
 trains = spike_trains(events)  # back to one SpikeTrain per neuron_id
 ```
+
+### Streaming
+
+`SpikeFeatureStream` incrementally ingests `SpikeEvent`s and reports per-unit
+`SpikeFeatureSnapshot`s over stepped windows, with memory bounded by the window
+horizon rather than the input history.
+
+```julia
+stream = SpikeFeatureStream(window = 0.1, step = 0.01)  # sliding; step == window for tumbling
+
+push!(stream, SpikeEvent(0.101, 17))   # true
+push!(stream, SpikeEvent(0.104, 83))
+push!(stream, SpikeEvent(0.105, 17))   # false — late/out-of-order, counted in stream.dropped
+push!(stream, SpikeTrain(17, [0.106, 0.108]))  # returns number accepted
+
+snap = snapshot(stream)   # nothing until the first accepted event
+# (t_start = 0.101, t_end = 0.201, window = 0,
+#  neurons = [(neuron_id = 17, features = SpikeFeatureSnapshot(...)), ...])
+```
+
+- Windows are `[t0 + k*step, t0 + k*step + window)` on a grid anchored at
+  `t_start` (or the first accepted event) — the same half-open interior
+  semantics as `windowed_spike_features`. `snapshot` reports the active window
+  containing the newest event; it may still be partial.
+- Events must arrive in non-decreasing time order. A `SpikeEvent` with
+  `t < ` the newest accepted time is dropped (`push!` returns `false`,
+  `stream.dropped` counts drops); equal timestamps are accepted.
+- `snap.neurons` is sorted by `neuron_id` and each `features` field is a
+  `SpikeFeatureSnapshot`, so `SpikeFeatureNormalizer` / `transform` apply
+  unchanged. Only units with spikes inside the window appear.
+- `push!` also accepts a `SpikeTrain` (bulk ingest, returns accepted count).
+  Per-unit buffers are evicted behind the active window, so memory stays
+  bounded by active units and in-window spike counts.
 
 ## Installation
 

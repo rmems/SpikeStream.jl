@@ -14,6 +14,7 @@ Primary package boundary:
 - `spike_features` / `SpikeFeatureSnapshot` — canonical raw feature snapshot
 - `SpikeFeatureNormalizer` / `transform` — explicit feature normalization
 - `normalized_feature_vector` — compatibility helper (snapshot + default normalizer)
+- `SpikeFeatureStream` / `snapshot` — bounded-memory incremental `SpikeEvent` ingest
 
 Event types:
 - `SpikeEvent` — one spike: time + neuron/unit id
@@ -28,10 +29,12 @@ using Statistics
 
 include("spike_features.jl")
 include("spike_events.jl")
+include("spike_stream.jl")
 
 export spike_count, spike_density, isi_stats, detect_bursts
 export windowed_spike_features, normalized_feature_vector
 export SpikeFeatureSnapshot, spike_features, SpikeFeatureNormalizer, transform
 export SpikeEvent, SpikeTrain, spike_times, neuron_id, spike_events, spike_trains
+export SpikeFeatureStream, snapshot
 
 end # module

@@ -41,6 +41,28 @@ for (label, n, dur) in SCALES
     SUITE[label] = group
 end
 
+# Streaming (GH#30): incremental ingest vs repeated batch recomputation.
+# The stream keeps per-neuron state bounded by the window horizon; the batch
+# baselines rescan the full event history on every call.
+stream_events = sort!(SpikeEvent[SpikeEvent(rand() * 10.0, rand(1:16)) for _ = 1:5_000])
+stream_times = Float64[ev.time for ev in stream_events]
+recompute_at = round.(Int, range(500, 5_000, length = 10))
+
+stream_group = BenchmarkGroup()
+stream_group["stream_ingest+snapshot"] = @benchmarkable begin
+    s = SpikeFeatureStream(window = 0.5, step = 0.1)
+    foreach(ev -> push!(s, ev), $stream_events)
+    snapshot(s)
+end
+stream_group["batch_windowed_features"] =
+    @benchmarkable windowed_spike_features($stream_times; window_size = 0.5, step = 0.1)
+stream_group["batch_recompute_prefixes"] = @benchmarkable begin
+    for m in $recompute_at
+        spike_features($stream_times[1:m]; t_start = 0.0, t_end = 10.0)
+    end
+end
+SUITE["stream"] = stream_group
+
 results = run(SUITE, verbose = true, seconds = 5)
 
 println()
@@ -61,6 +83,19 @@ for (label, n, _) in SCALES
         mem_str = BenchmarkTools.prettymemory(memory(m))
         println("  $(rpad(name, 32)) $time_str  ($alloc_str allocs, $mem_str)")
     end
+end
+
+group = results["stream"]
+println()
+println("  stream (5_000 events, 16 units; incremental vs batch)")
+println("  " * "-" ^ 60)
+for name in sort(collect(keys(group)))
+    trial = group[name]
+    m = median(trial)
+    time_str = BenchmarkTools.prettytime(time(m))
+    alloc_str = allocs(m)
+    mem_str = BenchmarkTools.prettymemory(memory(m))
+    println("  $(rpad(name, 32)) $time_str  ($alloc_str allocs, $mem_str)")
 end
 
 println()
