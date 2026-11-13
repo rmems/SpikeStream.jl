@@ -286,6 +286,80 @@ Base.isfinite(x::ConversionProbe) = isfinite(x.value)
             t_end = 16.5,
         )
         @test any(f.t_start ≈ 16.4 && f.count == 1 for f in offset_overlap)
+
+        # non-integer window/step: implicit last spike must not drop when nxt < t_end by 1 ulp
+        drift_last = windowed_spike_features([0.0, 0.45]; window_size = 0.15, step = 0.3)
+        @test length(drift_last) == 2
+        @test drift_last[end].count == 1
+        @test drift_last[end].t_end ≈ 0.45
+        @test sum(f.count for f in drift_last) == 2
+
+        drift_off = windowed_spike_features([0.59, 1.04]; window_size = 0.15, step = 0.3)
+        @test drift_off[end].count == 1
+
+        # non-integer path: spike exactly on a nominal end stays out of [start, end)
+        over_end = windowed_spike_features(
+            [1.4];
+            window_size = 0.3,
+            step = 0.2,
+            t_start = 0.5,
+            t_end = 2.0,
+        )
+        @test sum(f.count for f in over_end) == 1
+        @test all(!(f.t_start ≈ 1.1 && f.count == 1) for f in over_end)
+        @test any(f.t_start ≈ 1.3 && f.count == 1 for f in over_end)
+
+        # 32-ulp equality is wider than window-end rounding at large t0
+        epoch = 1.7e9
+        epoch_feats = windowed_spike_features(
+            [epoch, epoch + 0.15 - 5e-6, epoch + 0.45];
+            window_size = 0.15,
+            step = 0.3,
+        )
+        @test epoch_feats[1].count == 2
+        @test epoch_feats[2].count == 1
+
+        mid = 1000.0
+        mid_feats = windowed_spike_features(
+            [mid, mid + 0.15 - 1e-12, mid + 0.45];
+            window_size = 0.15,
+            step = 0.3,
+        )
+        @test mid_feats[1].count == 2
+        @test mid_feats[2].count == 1
+
+        # prevfloat(window end) is interior; must not be excluded by end tolerance
+        ulp_in = windowed_spike_features(
+            [prevfloat(0.15)];
+            window_size = 0.15,
+            step = 0.3,
+            t_start = 0.0,
+            t_end = 0.6,
+        )
+        @test sum(f.count for f in ulp_in) == 1
+        @test ulp_in[1].count == 1
+
+        # span rounding above window_size must not drop the last-candidate spike
+        gap_edge = windowed_spike_features(
+            [0.3];
+            window_size = 0.2,
+            step = 0.3,
+            t_start = 0.1,
+            t_end = 1.0,
+        )
+        @test sum(f.count for f in gap_edge) == 1
+        @test gap_edge[1].count == 1
+
+        # membership uses the snapped end: prevfloat(t_end) stays in the final window
+        snapped_end = windowed_spike_features(
+            [prevfloat(0.45)];
+            window_size = 0.15,
+            step = 0.3,
+            t_start = 0.0,
+            t_end = 0.45,
+        )
+        @test sum(f.count for f in snapped_end) == 1
+        @test snapped_end[end].count == 1
     end
 
     @testset "normalized vector" begin
