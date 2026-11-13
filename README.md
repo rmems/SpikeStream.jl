@@ -22,7 +22,27 @@ SpikeStream.jl is focused on feature extraction from spike-event streams.
 - `isi_stats(spike_times)`
 - `detect_bursts(spike_times; max_isi, min_spikes)`
 - `windowed_spike_features(spike_times; window_size, step)`
-- `normalized_feature_vector(spike_times)`
+- `spike_features(spike_times)` → raw [`SpikeFeatureSnapshot`](#feature-extraction-vs-normalization)
+- `SpikeFeatureNormalizer` + `transform(normalizer, snapshot)` → explicit scaling
+- `normalized_feature_vector(spike_times)` → compatibility helper (snapshot + default normalizer)
+
+## Feature extraction vs normalization
+
+Feature extraction returns physical/statistical quantities (`SpikeFeatureSnapshot`:
+count, density, ISI mean/CV, burst count). Normalization is a separate, explicit
+policy (`SpikeFeatureNormalizer`) so callers can choose scales for their model or
+dataset without baking experiment-specific constants into extraction.
+
+```julia
+snap = spike_features(spike_times; t_start=0.0, t_end=0.1)
+normalizer = SpikeFeatureNormalizer(; max_density=200.0, max_isi_cv=2.0)
+vec = transform(normalizer, snap)
+```
+
+The same normalizer configuration is intended for batch snapshots and future
+streaming snapshots (#30) without special-case logic. Defaults match the
+historical `normalized_feature_vector` behavior (`count_mode=:presence`,
+`max_isi_cv=2.0`, `clip=true`).
 
 ## Output Ranges
 
@@ -36,7 +56,8 @@ SpikeStream.jl is focused on feature extraction from spike-event streams.
   - `isi_mean >= 0`
   - `isi_cv >= 0`
   - `burst_count >= 0`
-- `normalized_feature_vector` → length-4 vector in `[0, 1]`
+- `SpikeFeatureSnapshot` fields match the corresponding raw feature ranges above
+- `transform` / `normalized_feature_vector` → length-4 vector; with default `clip=true`, each component is in `[0, 1]`
 
 ## Package Boundary
 
@@ -44,7 +65,7 @@ SpikeStream.jl owns spike-stream **feature extraction** only. Kinetic / signal-d
 
 | Area | Owner | Notes |
 | --- | --- | --- |
-| `spike_count`, `spike_density`, `isi_stats`, `detect_bursts`, `windowed_spike_features`, `normalized_feature_vector` | **SpikeStream.jl** | Public API of this package |
+| `spike_count`, `spike_density`, `isi_stats`, `detect_bursts`, `windowed_spike_features`, `spike_features`, `SpikeFeatureNormalizer` / `transform`, `normalized_feature_vector` | **SpikeStream.jl** | Public API of this package |
 | Hurst exponent | [kinetic-signals](https://github.com/rmems/kinetic-signals) | Formerly transitional `compute_hurst` (removed) |
 | Hawkes intensity | [kinetic-signals](https://github.com/rmems/kinetic-signals) | Formerly transitional `compute_hawkes` (removed) |
 | Surprise / geometric Brownian motion (GBM) | [kinetic-signals](https://github.com/rmems/kinetic-signals) | Formerly transitional `compute_gbm_surprise` (removed) |
@@ -70,7 +91,10 @@ density = spike_density(spike_times; t_start=0.0, t_end=0.1)
 stats = isi_stats(spike_times)
 bursts = detect_bursts(spike_times; max_isi=0.004, min_spikes=3)
 windows = windowed_spike_features(spike_times; window_size=0.03, step=0.03)
-vec = normalized_feature_vector(spike_times; t_start=0.0, t_end=0.1, max_density=200.0)
+snap = spike_features(spike_times; t_start=0.0, t_end=0.1)
+vec = transform(SpikeFeatureNormalizer(; max_density=200.0), snap)
+# compatibility helper (same default policy):
+# vec = normalized_feature_vector(spike_times; t_start=0.0, t_end=0.1, max_density=200.0)
 ```
 
 ## Installation

@@ -231,6 +231,7 @@ function detect_bursts_sorted(
     min_spikes::Int = 3,
 )
     n = length(sorted_spike_times)
+    n == 0 && return UnitRange{Int}[]
     n < min_spikes && return UnitRange{Int}[]
 
     isis = diff(sorted_spike_times)
@@ -358,17 +359,45 @@ function windowed_spike_features(
 end
 
 """
-    normalized_feature_vector(spike_times; t_start=nothing, t_end=nothing, max_density=1000.0) -> Vector{Float64}
+    SpikeFeatureSnapshot
 
-Build a normalized feature vector in `[0, 1]` order:
-`[count_norm, density_norm, isi_cv_norm, burst_norm]`.
+Canonical raw spike features for one observation window.
+
+Fields are physical/statistical quantities (not scaled to `[0, 1]`):
+
+- `count` — spike count (`>= 0`)
+- `density` — spikes per unit time (`>= 0`)
+- `isi_mean` — mean inter-spike interval (`>= 0`)
+- `isi_cv` — coefficient of variation of ISIs (`>= 0`)
+- `burst_count` — number of detected bursts (`>= 0`)
+
+Downstream normalization is separate: use [`SpikeFeatureNormalizer`](@ref) with
+[`transform`](@ref). Batch helpers and future streaming snapshots should share
+this shape so one normalizer configuration applies to both.
 """
-function normalized_feature_vector(
+struct SpikeFeatureSnapshot
+    count::Int
+    density::Float64
+    isi_mean::Float64
+    isi_cv::Float64
+    burst_count::Int
+end
+
+"""
+    spike_features(spike_times; t_start=nothing, t_end=nothing, max_isi=0.02, min_spikes=3) -> SpikeFeatureSnapshot
+
+Extract the canonical raw feature snapshot for `spike_times` (optionally windowed).
+
+Does not apply scaling or clipping; pass the result to [`transform`](@ref) with an
+explicit [`SpikeFeatureNormalizer`](@ref) when a bounded vector is needed.
+"""
+function spike_features(
     spike_times::AbstractVector{<:Real};
     t_start = nothing,
     t_end = nothing,
-    max_density::Real = 1000.0,
-)::Vector{Float64}
+    max_isi::Real = 0.02,
+    min_spikes::Integer = 3,
+)::SpikeFeatureSnapshot
     times = _sorted_finite_times(spike_times)
     start_t = isnothing(t_start) ? -Inf : Float64(t_start)
     end_t = isnothing(t_end) ? Inf : Float64(t_end)
@@ -379,12 +408,131 @@ function normalized_feature_vector(
     c = _spike_count_sorted(times; t_start = t_start, t_end = t_end)
     d = _spike_density_sorted(times; t_start = t_start, t_end = t_end)
     stats = isi_stats_sorted(window_times)
-    b = length(detect_bursts_sorted(window_times))
+    b = length(
+        detect_bursts_sorted(window_times; max_isi = max_isi, min_spikes = Int(min_spikes)),
+    )
 
-    count_norm = c > 0 ? 1.0 : 0.0
-    density_norm = clamp(d / max_density, 0.0, 1.0)
-    isi_cv_norm = clamp(stats.cv / 2.0, 0.0, 1.0)
-    burst_norm = clamp(b / max(c, 1), 0.0, 1.0)
+    return SpikeFeatureSnapshot(c, d, stats.mean, stats.cv, b)
+end
 
-    return [count_norm, density_norm, isi_cv_norm, burst_norm]
+"""
+    SpikeFeatureNormalizer(; max_density=1000.0, max_isi_cv=2.0, max_count=1.0,
+                           count_mode=:presence, clip=true)
+
+Explicit, serializable scaling policy from [`SpikeFeatureSnapshot`](@ref) to a
+length-4 feature vector.
+
+# Scaling
+
+| Component | Policy |
+| --- | --- |
+| count | `:presence` → `1.0` if `count > 0` else `0.0`; `:scaled` → `count / max_count` |
+| density | `density / max_density` |
+| isi_cv | `isi_cv / max_isi_cv` |
+| burst | `burst_count / max(count, 1)` (relative to the snapshot's spike count) |
+
+When `clip=true` (default), each component is clamped to `[0, 1]`. Scales must be
+positive and finite. No training-data statistics are estimated.
+
+The default constructor matches the historical [`normalized_feature_vector`](@ref)
+behavior (`count_mode=:presence`, `max_isi_cv=2.0`, `clip=true`).
+"""
+struct SpikeFeatureNormalizer
+    max_density::Float64
+    max_isi_cv::Float64
+    max_count::Float64
+    count_mode::Symbol
+    clip::Bool
+
+    function SpikeFeatureNormalizer(max_density, max_isi_cv, max_count, count_mode, clip)
+        md = Float64(max_density)
+        mc = Float64(max_isi_cv)
+        mcount = Float64(max_count)
+        mode = convert(Symbol, count_mode)
+        isfinite(md) && md > 0 ||
+            throw(ArgumentError("max_density must be a positive finite value"))
+        isfinite(mc) && mc > 0 ||
+            throw(ArgumentError("max_isi_cv must be a positive finite value"))
+        isfinite(mcount) && mcount > 0 ||
+            throw(ArgumentError("max_count must be a positive finite value"))
+        mode === :presence ||
+            mode === :scaled ||
+            throw(
+                ArgumentError("count_mode must be :presence or :scaled, got $(repr(mode))"),
+            )
+        return new(md, mc, mcount, mode, Bool(clip))
+    end
+end
+
+function SpikeFeatureNormalizer(;
+    max_density::Real = 1000.0,
+    max_isi_cv::Real = 2.0,
+    max_count::Real = 1.0,
+    count_mode::Symbol = :presence,
+    clip::Bool = true,
+)
+    return SpikeFeatureNormalizer(max_density, max_isi_cv, max_count, count_mode, clip)
+end
+
+"""
+    transform(normalizer::SpikeFeatureNormalizer, features::SpikeFeatureSnapshot) -> Vector{Float64}
+
+Apply `normalizer` to a raw snapshot, returning
+`[count_norm, density_norm, isi_cv_norm, burst_norm]`.
+"""
+function transform(
+    normalizer::SpikeFeatureNormalizer,
+    features::SpikeFeatureSnapshot,
+)::Vector{Float64}
+    count_norm = if normalizer.count_mode === :presence
+        features.count > 0 ? 1.0 : 0.0
+    else
+        features.count / normalizer.max_count
+    end
+    density_norm = features.density / normalizer.max_density
+    isi_cv_norm = features.isi_cv / normalizer.max_isi_cv
+    burst_norm = features.burst_count / max(features.count, 1)
+
+    vec = [count_norm, density_norm, isi_cv_norm, burst_norm]
+    if normalizer.clip
+        @inbounds for i in eachindex(vec)
+            vec[i] = clamp(vec[i], 0.0, 1.0)
+        end
+    end
+    return vec
+end
+
+"""
+    normalized_feature_vector(spike_times; t_start=nothing, t_end=nothing,
+                              max_density=1000.0, normalizer=nothing,
+                              max_isi=0.02, min_spikes=3) -> Vector{Float64}
+
+Compatibility helper: extract a [`SpikeFeatureSnapshot`](@ref) then
+[`transform`](@ref) it.
+
+If `normalizer` is omitted, uses `SpikeFeatureNormalizer(; max_density=max_density)`
+(historical default scales). Prefer constructing a [`SpikeFeatureNormalizer`](@ref)
+explicitly when scales should be shared across batch and streaming callers; when
+`normalizer` is provided, `max_density` is ignored.
+"""
+function normalized_feature_vector(
+    spike_times::AbstractVector{<:Real};
+    t_start = nothing,
+    t_end = nothing,
+    max_density::Real = 1000.0,
+    normalizer::Union{Nothing,SpikeFeatureNormalizer} = nothing,
+    max_isi::Real = 0.02,
+    min_spikes::Integer = 3,
+)::Vector{Float64}
+    snap = spike_features(
+        spike_times;
+        t_start = t_start,
+        t_end = t_end,
+        max_isi = max_isi,
+        min_spikes = min_spikes,
+    )
+    n =
+        isnothing(normalizer) ? SpikeFeatureNormalizer(; max_density = max_density) :
+        normalizer
+    return transform(n, snap)
 end
