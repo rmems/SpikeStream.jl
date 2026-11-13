@@ -349,6 +349,17 @@ Base.isfinite(x::ConversionProbe) = isfinite(x.value)
         )
         @test sum(f.count for f in gap_edge) == 1
         @test gap_edge[1].count == 1
+
+        # membership uses the snapped end: prevfloat(t_end) stays in the final window
+        snapped_end = windowed_spike_features(
+            [prevfloat(0.45)];
+            window_size = 0.15,
+            step = 0.3,
+            t_start = 0.0,
+            t_end = 0.45,
+        )
+        @test sum(f.count for f in snapped_end) == 1
+        @test snapped_end[end].count == 1
     end
 
     @testset "normalized vector" begin
