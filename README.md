@@ -146,8 +146,8 @@ snap = snapshot(stream)   # nothing until the first accepted event
   `t_start` (or the first accepted event) — the same half-open interior
   semantics as `windowed_spike_features`. `snapshot` reports the active window
   containing the newest event; it may still be partial.
-- Events must arrive in non-decreasing time order. A `SpikeEvent` with
-  `t < ` the newest accepted time is dropped (`push!` returns `false`,
+- Events must arrive in non-decreasing time order. A `SpikeEvent` with a
+  time earlier than the newest accepted time is dropped (`push!` returns `false`,
   `stream.dropped` counts drops); equal timestamps are accepted.
 - `snap.neurons` is sorted by `neuron_id` and each `features` field is a
   `SpikeFeatureSnapshot`, so `SpikeFeatureNormalizer` / `transform` apply

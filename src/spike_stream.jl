@@ -24,8 +24,8 @@ belong to no window.
 
 # Ordering and memory
 
-Events must arrive in non-decreasing time order. A `SpikeEvent` with
-`t < ` the newest accepted time is late/out-of-order: it is dropped,
+Events must arrive in non-decreasing time order. A `SpikeEvent` with a time
+earlier than the newest accepted time is late/out-of-order: it is dropped,
 [`push!`](@ref) returns `false`, and the drop is counted in `stream.dropped`.
 Times exactly equal to the last accepted time are accepted (simultaneous spikes
 across units are normal).
