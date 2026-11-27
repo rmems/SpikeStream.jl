@@ -78,15 +78,29 @@ function _population_duration(tmin, tmax, n_spikes::Int, t_start, t_end)::Float6
         lo = t_start
         hi = t_end
     end
-    # Subtract in the input's own precision: converting large integer
-    # endpoints to Float64 first can collapse distinct bounds to one value.
+    (isnothing(lo) || isnothing(hi)) && return 0.0
+    # Subtract in a precision that keeps the endpoints distinct: converting
+    # to Float64 first can collapse large integer, rational or high-precision
+    # (BigFloat) bounds to one value while the window still contains spikes.
     d = if lo isa Integer && hi isa Integer
         Float64(BigInt(hi) - BigInt(lo))
+    elseif lo isa Union{Integer,Rational} && hi isa Union{Integer,Rational}
+        Float64(Rational{BigInt}(hi) - Rational{BigInt}(lo))
     else
-        Float64(hi) - Float64(lo)
+        Float64(BigFloat(hi) - BigFloat(lo))
     end
     return max(0.0, d)
 end
+
+# Window membership is evaluated in each bound's own precision: an
+# AbstractFloat bound compares the Float64 images of spike times — the same
+# domain `spike_count` uses after conversion — while an exact (integer or
+# rational) bound compares the stored values directly, preserving timestamp
+# precision beyond Float64.
+_population_below_lo(t, lo) =
+    lo isa AbstractFloat ? isless(Float64(t), Float64(lo)) : isless(t, lo)
+_population_above_hi(t, hi) =
+    hi isa AbstractFloat ? isless(Float64(hi), Float64(t)) : isless(hi, t)
 
 function _population_window_counts(
     trains::AbstractVector{<:SpikeTrain};
@@ -96,6 +110,7 @@ function _population_window_counts(
     T = eltype(trains)
     counts = Dict{isconcretetype(T) ? fieldtype(T, :neuron_id) : Integer,Int}()
     unbounded = isnothing(t_start) && isnothing(t_end)
+    need_extrema = isnothing(t_start) || isnothing(t_end)
     lo = isnothing(t_start) ? -Inf : t_start
     hi = isnothing(t_end) ? Inf : t_end
     empty_window = !unbounded && isless(hi, lo)
@@ -111,14 +126,28 @@ function _population_window_counts(
             0
         else
             # Train times are stored sorted; searching them directly avoids
-            # re-sorting a copy and keeps the raw-bound `isless` ordering
-            # (and precision) that `spike_count` applies after conversion.
-            max(0, searchsortedlast(times, hi) - searchsortedfirst(times, lo) + 1)
+            # re-sorting a copy. An AbstractFloat bound searches the Float64
+            # image of the times (still sorted; same domain `spike_count`
+            # uses), an exact bound searches the stored values.
+            left = if lo isa AbstractFloat
+                searchsortedfirst(times, lo; by = Float64)
+            else
+                searchsortedfirst(times, lo)
+            end
+            right = if hi isa AbstractFloat
+                searchsortedlast(times, hi; by = Float64)
+            else
+                searchsortedlast(times, hi)
+            end
+            max(0, right - left + 1)
         end
         counts[train.neuron_id] = get(counts, train.neuron_id, 0) + c
-        isempty(times) && continue
-        tmin = isnothing(tmin) ? first(times) : min(tmin, first(times))
-        tmax = isnothing(tmax) ? last(times) : max(tmax, last(times))
+        (isempty(times) || !need_extrema) && continue
+        # `isless` keeps the original timestamp where `min`/`max` would
+        # promote mixed types: a signed/unsigned pair throws on promotion,
+        # and Float32/Int promotion can collapse a positive span.
+        tmin = isnothing(tmin) || isless(first(times), tmin) ? first(times) : tmin
+        tmax = isnothing(tmax) || isless(tmax, last(times)) ? last(times) : tmax
     end
     return counts, tmin, tmax, n_spikes
 end
@@ -130,6 +159,7 @@ function _population_window_counts(
 )
     E = eltype(events)
     counts = Dict{isconcretetype(E) ? fieldtype(E, :neuron_id) : Integer,Int}()
+    need_extrema = isnothing(t_start) || isnothing(t_end)
     lo = isnothing(t_start) ? -Inf : t_start
     hi = isnothing(t_end) ? Inf : t_end
     tmin = nothing
@@ -138,14 +168,15 @@ function _population_window_counts(
         t = ev.time
         isfinite(t) || throw(ArgumentError("spike times must be finite"))
         c = get(counts, ev.neuron_id, 0)
-        # Same `isless` boundary order as the sorted-search train path, so
-        # signed zeros and large integer times behave identically.
-        if !isless(t, lo) && !isless(hi, t)
+        # Same bound-precision rule as the sorted-search train path, so both
+        # overloads count identical windows.
+        if !_population_below_lo(t, lo) && !_population_above_hi(t, hi)
             c += 1
         end
         counts[ev.neuron_id] = c
-        tmin = isnothing(tmin) ? t : min(tmin, t)
-        tmax = isnothing(tmax) ? t : max(tmax, t)
+        need_extrema || continue
+        tmin = isnothing(tmin) || isless(t, tmin) ? t : tmin
+        tmax = isnothing(tmax) || isless(tmax, t) ? t : tmax
     end
     return counts, tmin, tmax, length(events)
 end
@@ -224,13 +255,16 @@ small. All functions are pure — no global state is read or mutated.
 
 # Window and denominator semantics
 
-Spikes are counted inside the inclusive window `[t_start, t_end]` (same bounds
-as [`spike_count`](@ref)); a missing bound is unbounded for counting. The
-`duration` used for rates is `t_end - t_start` with any missing edge inferred
-from the population's earliest/latest spike — the same convention as
-[`spike_density`](@ref) — so an inferred duration is `0` when the population
-has fewer than two distinct edge times. A non-positive `duration` yields rate
-fields of `0` while count fields are still reported.
+Spikes are counted inside the inclusive window `[t_start, t_end]`; a missing
+bound is unbounded for counting. Each bound is applied in its own precision:
+an `AbstractFloat` bound compares the `Float64` images of spike times — the
+same domain [`spike_count`](@ref) uses — while an exact (integer or rational)
+bound compares the stored values directly, preserving timestamp precision
+beyond `Float64`. The `duration` used for rates is `t_end - t_start` with any
+missing edge inferred from the population's earliest/latest spike — the same
+convention as [`spike_density`](@ref) — so an inferred duration is `0` when
+the population has fewer than two distinct edge times. A non-positive
+`duration` yields rate fields of `0` while count fields are still reported.
 
 `n_total_units` is the declared population size used as the denominator for
 `mean_unit_rate`, `active_fraction`, `count_mean` and `count_variance`. It

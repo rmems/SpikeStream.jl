@@ -1300,6 +1300,89 @@ Base.isfinite(x::ConversionProbe) = isfinite(x.value)
             ).total_spike_count == 1
         end
 
+        @testset "mixed timestamp types keep original extrema" begin
+            # `min`/`max` promote a signed and unsigned time to UInt and
+            # throw; `isless` keeps each original timestamp
+            mixed_sign = SpikeEvent[SpikeEvent(-1, 1), SpikeEvent(UInt(1), 2)]
+            snap = population_spike_features(mixed_sign; t_start = -2, t_end = 2)
+            @test snap.total_spike_count == 2
+            @test snap.duration == 4.0
+            @test snap.population_rate == 0.5
+            inferred = population_spike_features(mixed_sign)
+            @test inferred.duration == 2.0
+            @test inferred.population_rate == 1.0
+
+            # Float32(2^24) promotes Int times back down to Float32, which
+            # would erase the one-unit span; extrema keep the raw values
+            float_int =
+                SpikeEvent[SpikeEvent(Float32(16_777_216), 1), SpikeEvent(16_777_217, 2)]
+            snap = population_spike_features(float_int)
+            @test snap.duration == 1.0
+            @test snap.total_spike_count == 2
+            @test snap.population_rate == 2.0
+
+            # same invariants through the SpikeTrain path
+            sign_trains = SpikeTrain[SpikeTrain(1, Int[-1]), SpikeTrain(2, UInt64[0x1])]
+            @test population_spike_features(sign_trains; t_start = -2, t_end = 2).total_spike_count ==
+                  2
+            @test population_spike_features(sign_trains).duration == 2.0
+            f32_trains =
+                SpikeTrain[SpikeTrain(1, Float32[16_777_216]), SpikeTrain(2, [16_777_217])]
+            @test population_spike_features(f32_trains).duration == 1.0
+        end
+
+        @testset "float bounds share the spike_count window domain" begin
+            train = SpikeTrain(1, [1 // 3])
+            # `spike_count` converts both sides to Float64, so the rational
+            # spike lands exactly on the Float64 upper bound
+            @test spike_count(spike_times(train); t_start = 0.0, t_end = 1 / 3) == 1
+            for p in ([train], [SpikeEvent(1 // 3, 1)])
+                snap = population_spike_features(p; t_start = 0.0, t_end = 1 / 3)
+                @test snap.total_spike_count == 1
+                @test unit_firing_rates(p; t_start = 0.0, t_end = 1 / 3)[1].spike_count == 1
+            end
+            # the same edge on the lower bound
+            @test population_spike_features([train]; t_start = 1 / 3, t_end = 1.0).total_spike_count ==
+                  1
+
+            # exact bounds still compare the stored values: the Float64
+            # instant below the rational bound stays in, a rational instant
+            # strictly above it stays out
+            @test population_spike_features(
+                [SpikeEvent(1 / 3, 1)];
+                t_start = 0,
+                t_end = 1 // 3,
+            ).total_spike_count == 1
+            @test population_spike_features(
+                [SpikeEvent(1 // 3 + big(1) // big(10)^30, 1)];
+                t_start = 0,
+                t_end = 1 // 3,
+            ).total_spike_count == 0
+        end
+
+        @testset "high-precision bounds keep duration precision" begin
+            # BigFloat bounds closer than Float64 resolution: the window
+            # still contains a spike, so the rate must not be 0
+            b1 = big"1.0"
+            b2 = b1 + big"1e-70"
+            mid = b1 + big"5e-71"
+            for p in ([SpikeEvent(mid, 1)], [SpikeTrain(1, [mid])])
+                snap = population_spike_features(p; t_start = b1, t_end = b2)
+                @test snap.total_spike_count == 1
+                @test snap.duration == Float64(b2 - b1)
+                @test snap.duration > 0
+                @test snap.population_rate == 1 / snap.duration
+            end
+
+            # rational bounds below Float64 resolution keep an exact span
+            r1 = 1 // 3
+            r2 = r1 + big(1) // big(10)^40
+            snap = population_spike_features([SpikeEvent(r1, 1)]; t_start = r1, t_end = r2)
+            @test snap.total_spike_count == 1
+            @test snap.duration == 1e-40
+            @test snap.population_rate == 1 / snap.duration
+        end
+
         @testset "SpikeFeatureStream integration" begin
             stream = SpikeFeatureStream(window = 0.1, step = 0.1, t_start = 0.0)
             @test population_spike_features(stream) === nothing
