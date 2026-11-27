@@ -1772,6 +1772,11 @@ Base.BigFloat(t::CmpTick) = BigFloat(t.value)
             ];
             tolerance = 0,
         )[1].coincidence_count == 1
+        @test pairwise_synchrony(
+            SpikeTrain[SpikeTrain(1, Int64[-1]), SpikeTrain(2, UInt128[5])];
+            tolerance = 0,
+        )[1].coincidence_count == 0
+        @test coincidence_count(big.([0, 5]), big.([5]); tolerance = 0) == 1
 
         # pairwise over sparse, non-contiguous, negative ids — sorted rows
         trains = [
