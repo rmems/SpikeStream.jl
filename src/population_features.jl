@@ -79,16 +79,24 @@ function _population_duration(tmin, tmax, n_spikes::Int, t_start, t_end)::Float6
         hi = t_end
     end
     (isnothing(lo) || isnothing(hi)) && return 0.0
-    # Subtract in a precision that keeps the endpoints distinct: converting
-    # to Float64 first can collapse large integer, rational or high-precision
-    # (BigFloat) bounds to one value while the window still contains spikes.
-    d = if lo isa Integer && hi isa Integer
-        Float64(BigInt(hi) - BigInt(lo))
-    elseif lo isa Union{Integer,Rational} && hi isa Union{Integer,Rational}
-        Float64(Rational{BigInt}(hi) - Rational{BigInt}(lo))
-    else
-        Float64(BigFloat(hi) - BigFloat(lo))
+    if !isfinite(lo) || !isfinite(hi)
+        # ±Inf has no exact-rational image, so subtract in Float64. Equal
+        # infinities span a zero-length window — Inf - Inf is NaN, which
+        # would violate the documented duration >= 0.
+        return lo === hi ? 0.0 : max(0.0, Float64(hi) - Float64(lo))
     end
+    # Subtract exactly so the endpoints stay distinct: Rational{BigInt}
+    # losslessly represents every Integer, Rational and binary float, so the
+    # correctly rounded difference cannot collapse large integer, rational
+    # or close float bounds to one value, and never depends on the ambient
+    # BigFloat precision.
+    d =
+        if lo isa Union{Integer,Rational,Float16,Float32,Float64} &&
+           hi isa Union{Integer,Rational,Float16,Float32,Float64}
+            Float64(Rational{BigInt}(hi) - Rational{BigInt}(lo))
+        else
+            Float64(BigFloat(hi) - BigFloat(lo))
+        end
     return max(0.0, d)
 end
 
@@ -131,20 +139,30 @@ function _population_window_counts(
             # by=Float64 search is invalid on this element type — scan with
             # the same predicates as the event overload instead. Only a
             # declared float bound forces this: a missing bound's ±Inf
-            # sentinel searches to the array edge even on misordered images.
-            count(t -> !_population_below_lo(t, lo) && !_population_above_hi(t, hi), times)
+            # sentinel maps to the array edge even on misordered images.
+            count(
+                t ->
+                    (isnothing(t_start) || !_population_below_lo(t, lo)) &&
+                    (isnothing(t_end) || !_population_above_hi(t, hi)),
+                times,
+            )
         else
             # Train times are stored sorted; searching them directly avoids
             # re-sorting a copy. An AbstractFloat bound searches the Float64
             # image of the times (Float64 conversion preserves order for
             # integer and floating-point times), an exact bound searches the
-            # stored values.
-            left = if lo isa AbstractFloat
+            # stored values, and an omitted bound is the array edge — its
+            # ±Inf sentinel would force a Float64 conversion of every time.
+            left = if isnothing(t_start)
+                firstindex(times)
+            elseif lo isa AbstractFloat
                 searchsortedfirst(times, lo; by = Float64)
             else
                 searchsortedfirst(times, lo)
             end
-            right = if hi isa AbstractFloat
+            right = if isnothing(t_end)
+                lastindex(times)
+            elseif hi isa AbstractFloat
                 searchsortedlast(times, hi; by = Float64)
             else
                 searchsortedlast(times, hi)
@@ -181,10 +199,12 @@ function _population_window_counts(
         isfinite(t) || throw(ArgumentError("spike times must be finite"))
         c = get(counts, ev.neuron_id, 0)
         # Same bound-precision and inverted-window rules as the train path,
-        # so both overloads count identical windows. The unbounded case skips
-        # the per-event bound conversions entirely.
+        # so both overloads count identical windows. An omitted bound skips
+        # its predicate outright: the ±Inf sentinel would force a Float64
+        # conversion of every event time.
         if !empty_window &&
-           (unbounded || (!_population_below_lo(t, lo) && !_population_above_hi(t, hi)))
+           (isnothing(t_start) || !_population_below_lo(t, lo)) &&
+           (isnothing(t_end) || !_population_above_hi(t, hi))
             c += 1
         end
         counts[ev.neuron_id] = c

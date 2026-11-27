@@ -13,6 +13,21 @@ end
 Base.Float64(x::ConversionProbe) = (CONVERSION_COUNT[] += 1; x.value)
 Base.isfinite(x::ConversionProbe) = isfinite(x.value)
 
+const TICK_BOUND_CMPS = Ref(0)
+
+# A finite Real timestamp with exact comparisons and a lossless BigFloat
+# image but no Float64 conversion: omitted or exact window bounds must never
+# reach for Float64, and bound<->tick isless calls are counted so a binary
+# search is distinguishable from a full scan.
+struct CmpTick <: Real
+    value::Int
+end
+Base.isfinite(::CmpTick) = true
+Base.isless(a::CmpTick, b::CmpTick) = isless(a.value, b.value)
+Base.isless(a::Integer, b::CmpTick) = (TICK_BOUND_CMPS[] += 1; isless(a, b.value))
+Base.isless(a::CmpTick, b::Integer) = (TICK_BOUND_CMPS[] += 1; isless(a.value, b))
+Base.BigFloat(t::CmpTick) = BigFloat(t.value)
+
 @testset "SpikeStream" begin
 
     @testset "Package loads" begin
@@ -1429,6 +1444,70 @@ Base.isfinite(x::ConversionProbe) = isfinite(x.value)
             )
             @test snap.duration == 100.0
             @test snap.population_rate ≈ 0.01
+        end
+
+        @testset "infinite bounds never make duration NaN" begin
+            # equal infinite bounds span a zero-length window — Inf - Inf
+            # would otherwise produce NaN, violating duration >= 0
+            for p in ([SpikeEvent(0.5, 1)], [SpikeTrain(1, [0.5])])
+                snap = population_spike_features(p; t_start = Inf, t_end = Inf)
+                @test snap.duration == 0.0
+                @test snap.total_spike_count == 0
+                snap = population_spike_features(p; t_start = -Inf, t_end = -Inf)
+                @test snap.duration == 0.0
+                @test snap.total_spike_count == 0
+                snap = population_spike_features(p; t_start = Inf, t_end = 5.0)
+                @test snap.duration == 0.0
+                snap = population_spike_features(p; t_start = -Inf, t_end = Inf)
+                @test snap.duration == Inf
+            end
+        end
+
+        @testset "duration ignores ambient BigFloat precision" begin
+            # at 8-bit ambient precision BigFloat() rounds both Float64
+            # endpoints to 1.0, so a BigFloat subtraction would report a
+            # zero duration for a window that still contains the spike
+            lo, hi = 1.0, 1.0 + 2.0^-10
+            ev = SpikeEvent(lo + 2.0^-11, 1)
+            for (a, b) in ((lo, hi), (1, hi), (lo, 1 + 1 // 1024), (1 // 1, hi))
+                snap = setprecision(BigFloat, 8) do
+                    population_spike_features([ev]; t_start = a, t_end = b)
+                end
+                @test snap.duration == 2.0^-10
+                @test snap.population_rate ≈ 2.0^10
+                @test snap.total_spike_count == 1
+            end
+        end
+
+        @testset "omitted bounds never convert or scan timestamps" begin
+            # an omitted bound's ±Inf sentinel is internal — an exact-bound
+            # window over timestamps without a Float64 conversion must not
+            # reach for Float64 at all
+            n = 4096
+            ticks = CmpTick.(1:n)
+            trains = SpikeTrain[SpikeTrain(1, ticks)]
+            events = SpikeEvent[SpikeEvent(t, 1) for t in ticks]
+            for p in (events, trains)
+                @test population_spike_features(p; t_end = 2).total_spike_count == 2
+                @test population_spike_features(p; t_start = n - 1).total_spike_count == 2
+                @test only(unit_firing_rates(p; t_end = 2)).spike_count == 2
+            end
+            @test population_spike_features([SpikeEvent(CmpTick(1), 1)]; t_end = 2).total_spike_count ==
+                  1
+            @test population_spike_features([SpikeTrain(1, [CmpTick(1)])]; t_end = 2).duration ==
+                  0.0
+
+            # sorted trains take the binary-search path: ~log2(n) bound
+            # comparisons, not one per spike — a full predicate scan fails
+            TICK_BOUND_CMPS[] = 0
+            population_spike_features(trains; t_end = 2)
+            @test 0 < TICK_BOUND_CMPS[] <= 64
+            TICK_BOUND_CMPS[] = 0
+            population_spike_features(trains; t_start = n - 1)
+            @test 0 < TICK_BOUND_CMPS[] <= 64
+
+            # an explicitly float bound still uses the Float64-image domain
+            @test_throws MethodError population_spike_features(events; t_end = 2.0)
         end
 
         @testset "SpikeFeatureStream integration" begin
