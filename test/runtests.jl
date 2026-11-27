@@ -1381,6 +1381,17 @@ Base.isfinite(x::ConversionProbe) = isfinite(x.value)
             @test snap.total_spike_count == 1
             @test snap.duration == 1e-40
             @test snap.population_rate == 1 / snap.duration
+
+            # rational endpoints over huge integers keep their span too
+            b = 1_700_000_000_000_000_000
+            @test Float64(b // 1) == Float64((b + 100) // 1)
+            snap = population_spike_features(
+                [SpikeTrain(1, [b + 50])];
+                t_start = b // 1,
+                t_end = (b + 100) // 1,
+            )
+            @test snap.duration == 100.0
+            @test snap.population_rate ≈ 0.01
         end
 
         @testset "SpikeFeatureStream integration" begin

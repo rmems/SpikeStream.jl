@@ -263,7 +263,7 @@ bound compares the stored values directly, preserving timestamp precision
 beyond `Float64`. The `duration` used for rates is `t_end - t_start` with any
 missing edge inferred from the population's earliest/latest spike — the same
 convention as [`spike_density`](@ref) — so an inferred duration is `0` when
-the population has fewer than two distinct edge times. A non-positive
+the population has fewer than two spikes. A non-positive
 `duration` yields rate fields of `0` while count fields are still reported.
 
 `n_total_units` is the declared population size used as the denominator for
