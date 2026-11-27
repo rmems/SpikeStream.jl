@@ -6,17 +6,41 @@ SynchronyPairRow{I} =
 const _SyncPair = Union{SpikeTrain,AbstractVector{<:Real}}
 const _SyncPopulation = Union{AbstractVector{<:SpikeTrain},AbstractVector{<:SpikeEvent}}
 
-function _check_sync_tolerance(tolerance)::Float64
-    tol = Float64(tolerance)
-    (isfinite(tol) && tol >= 0) ||
+function _check_sync_tolerance(tolerance)
+    (isfinite(tolerance) && tolerance >= 0) ||
         throw(ArgumentError("tolerance must be a finite value >= 0"))
-    return tol
+    return tolerance
 end
 
-function _check_sync_bound(value, name)::Float64
-    v = Float64(value)
-    isfinite(v) || throw(ArgumentError("$name must be finite"))
-    return v
+function _check_sync_bound(value, name)
+    isfinite(value) || throw(ArgumentError("$name must be finite"))
+    return value
+end
+
+# The smallest promoted type that represents every input exactly:
+# promote_type can pick an unsigned or floating type that drops values from
+# the other inputs (sign, or integers above 2^53).
+function _promote_exact_eltype(types)
+    T = mapfoldl(identity, promote_type, types)
+    if T <: Unsigned && any(t -> t <: Signed, types)
+        return T === UInt128 ? BigInt : Int128
+    end
+    if T <: AbstractFloat && any(t -> t <: Integer, types)
+        return BigFloat
+    end
+    return T
+end
+
+# |a - b| at full precision: integers never wrap (widen or BigInt), machine
+# floats widen to at least Float64, mixed int/float stays exact via BigFloat.
+function _gap(a::Real, b::Real)
+    T = _promote_exact_eltype((typeof(a), typeof(b)))
+    if T <: Integer
+        T = T <: Base.BitInteger ? widen(T) : BigInt
+    elseif T <: AbstractFloat
+        T = promote_type(T, Float64)
+    end
+    return T(a) - T(b)
 end
 
 function _pair_times(times::AbstractVector{T}) where {T<:Real}
@@ -30,15 +54,15 @@ _pair_times(train::SpikeTrain) = spike_times(train)
 function _coincidence_pairs(
     a::AbstractVector{<:Real},
     b::AbstractVector{<:Real},
-    tol::Float64,
+    tol::Real,
 )::Int
     i, j = firstindex(a), firstindex(b)
     count = 0
     while i <= lastindex(a) && j <= lastindex(b)
         ai, bj = a[i], b[j]
-        if ai > bj && ai - bj > tol
+        if ai > bj && _gap(ai, bj) > tol
             j += 1
-        elseif bj > ai && bj - ai > tol
+        elseif bj > ai && _gap(bj, ai) > tol
             i += 1
         else
             count += 1
@@ -68,7 +92,7 @@ function _unit_time_map(
 )
     lo = isnothing(t_start) ? -Inf : _check_sync_bound(t_start, "t_start")
     hi = isnothing(t_end) ? Inf : _check_sync_bound(t_end, "t_end")
-    T = isempty(trains) ? Float64 : mapfoldl(tr -> eltype(tr.times), promote_type, trains)
+    T = isempty(trains) ? Float64 : _promote_exact_eltype(eltype(tr.times) for tr in trains)
     grouped = Dict{Integer,Vector{T}}()
     for tr in trains
         v = get!(() -> T[], grouped, tr.neuron_id)
@@ -90,7 +114,7 @@ function _unit_time_map(
 )
     lo = isnothing(t_start) ? -Inf : _check_sync_bound(t_start, "t_start")
     hi = isnothing(t_end) ? Inf : _check_sync_bound(t_end, "t_end")
-    T = isempty(events) ? Float64 : mapfoldl(ev -> typeof(ev.time), promote_type, events)
+    T = isempty(events) ? Float64 : _promote_exact_eltype(typeof(ev.time) for ev in events)
     grouped = Dict{Integer,Vector{T}}()
     for ev in events
         v = get!(() -> T[], grouped, ev.neuron_id)

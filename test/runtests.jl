@@ -1732,6 +1732,46 @@ Base.BigFloat(t::CmpTick) = BigFloat(t.value)
             [SpikeEvent(-0.0, 1), SpikeEvent(0.5, 1), SpikeEvent(0.5, 2)];
             t_start = 0.0,
         )
+        # window bounds keep their native type: Int64(10)^18 + 1 rounds to
+        # 1e18 in Float64, which would drop the spike sitting exactly on it
+        @test pairwise_synchrony(
+            [SpikeEvent(Int64(10)^18 + 1, 1), SpikeEvent(Int64(10)^18 + 1, 2)];
+            t_end = Int64(10)^18 + 1,
+            tolerance = 0,
+        )[1].coincidence_count == 1
+        @test pairwise_synchrony(
+            [SpikeEvent(Int64(10)^18 + 2, 1), SpikeEvent(Int64(10)^18 + 2, 2)];
+            t_end = Int64(10)^18 + 1,
+            tolerance = 0,
+        )[1].coincidence_count == 0
+        # same for trains: searchsorted against an Int64 bound must not round
+        @test pairwise_synchrony(
+            [SpikeTrain(1, [Int64(10)^18 + 1]), SpikeTrain(2, [Int64(10)^18 + 1])];
+            t_end = Int64(10)^18 + 1,
+            tolerance = 0,
+        )[1].coincidence_count == 1
+        # gaps never wrap for narrow integer types (Int8 span exceeds its range)
+        @test coincidence_count([Int8(-128)], [Int8(127)]; tolerance = 0) == 0
+        @test coincidence_count(
+            SpikeTrain(1, Int8[-128]),
+            SpikeTrain(2, Int8[127]);
+            tolerance = 0,
+        ) == 0
+        # Float32 gaps are compared at Float64 precision, not after Float32 rounding
+        @test coincidence_count(
+            [Float32(0.1)],
+            [Float32(0.1) + Float32(0.005)];
+            tolerance = Float64(Float32(0.1) + Float32(0.005)) - Float32(0.1) + 1e-9,
+        ) == 1
+        # mixed signed/unsigned and int/float times stay exact through grouping
+        @test pairwise_synchrony(
+            SpikeEvent[
+                SpikeEvent(Int64(-1), 1),
+                SpikeEvent(UInt64(3), 1),
+                SpikeEvent(Int64(-1), 2),
+            ];
+            tolerance = 0,
+        )[1].coincidence_count == 1
 
         # pairwise over sparse, non-contiguous, negative ids — sorted rows
         trains = [
