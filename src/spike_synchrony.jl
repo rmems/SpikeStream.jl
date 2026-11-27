@@ -40,7 +40,8 @@ function _gap(a::Real, b::Real)
     elseif T <: AbstractFloat
         T = promote_type(T, Float64)
     end
-    return T(a) - T(b)
+    # convert, not T(): a higher-precision BigFloat input keeps its precision
+    return convert(T, a) - convert(T, b)
 end
 
 function _pair_times(times::AbstractVector{T}) where {T<:Real}

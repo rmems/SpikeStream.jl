@@ -1777,6 +1777,12 @@ Base.BigFloat(t::CmpTick) = BigFloat(t.value)
             tolerance = 0,
         )[1].coincidence_count == 0
         @test coincidence_count(big.([0, 5]), big.([5]); tolerance = 0) == 1
+        # higher-than-default BigFloat precision is preserved: distinct times
+        # below the default 256-bit gap still don't match at tolerance = 0
+        hi_precision = setprecision(BigFloat, 512) do
+            big"1" + big"2"^(-300)
+        end
+        @test coincidence_count([big(1)], [hi_precision]; tolerance = 0) == 0
 
         # pairwise over sparse, non-contiguous, negative ids — sorted rows
         trains = [
