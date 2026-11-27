@@ -37,6 +37,9 @@ Base.isfinite(x::ConversionProbe) = isfinite(x.value)
             :spike_trains,
             :SpikeFeatureStream,
             :snapshot,
+            :PopulationFeatureSnapshot,
+            :population_spike_features,
+            :unit_firing_rates,
         )
             @test Base.isexported(SpikeStream, name)
             @test haskey(Base.Docs.meta(SpikeStream), Base.Docs.Binding(SpikeStream, name))
@@ -970,6 +973,261 @@ Base.isfinite(x::ConversionProbe) = isfinite(x.value)
             snap = snapshot(s)
             @test [row.neuron_id for row in snap.neurons] == Int32[3, 7]
             @test snap.neurons[2].features.count == 1
+        end
+    end
+
+    @testset "population features" begin
+        pop = [
+            SpikeTrain(1, [0.1, 0.2, 0.3]),
+            SpikeTrain(7, [0.15]),
+            SpikeTrain(1003, Float64[]),
+        ]
+
+        @testset "batch snapshot over SpikeTrain vectors" begin
+            snap = population_spike_features(pop; t_start = 0.0, t_end = 1.0)
+            @test snap isa PopulationFeatureSnapshot
+            @test snap.duration == 1.0
+            @test snap.n_total_units == 3
+            @test snap.n_observed_units == 3
+            @test snap.n_active_units == 2
+            @test snap.total_spike_count == 4
+            @test snap.population_rate == 4.0
+            @test snap.mean_unit_rate ≈ 4 / 3
+            @test snap.active_fraction ≈ 2 / 3
+            @test snap.count_mean ≈ 4 / 3
+            @test snap.count_variance ≈ (25 + 1 + 16) / 27
+            @test snap.fano_factor ≈ snap.count_variance / snap.count_mean
+
+            # repeated calls are pure: same input, same snapshot, no mutation
+            @test population_spike_features(pop; t_start = 0.0, t_end = 1.0) == snap
+            @test spike_times(pop[1]) == [0.1, 0.2, 0.3]
+
+            # inferred duration spans first/last spike of the whole population
+            inferred = population_spike_features(pop)
+            @test inferred.duration ≈ 0.2
+            @test inferred.population_rate ≈ 4 / 0.2
+
+            # a single SpikeTrain is a one-unit population
+            solo = population_spike_features(SpikeTrain(4, [0.1, 0.9]))
+            @test solo.n_total_units == 1
+            @test solo.n_active_units == 1
+            @test solo.population_rate ≈ 2 / 0.8
+            @test solo.count_variance == 0.0
+            @test solo.fano_factor == 0.0
+        end
+
+        @testset "batch snapshot over SpikeEvent vectors" begin
+            events = [
+                SpikeEvent(0.05, 1),
+                SpikeEvent(0.5, 1),
+                SpikeEvent(0.9, 1),
+                SpikeEvent(0.5, 2),
+                SpikeEvent(0.9, 3),
+            ]
+            snap = population_spike_features(events; t_start = 0.4, t_end = 0.6)
+            @test snap.duration ≈ 0.2
+            # events outside the window still mark their unit as observed
+            @test snap.n_observed_units == 3
+            @test snap.n_active_units == 2
+            @test snap.total_spike_count == 2
+            @test snap.population_rate ≈ 10.0
+            @test snap.active_fraction ≈ 2 / 3
+
+            # expanding trains to events drops declared-silent units: the empty
+            # train above is unobserved, so the denominator shrinks accordingly
+            ev_pop = spike_events(pop)
+            ev_snap = population_spike_features(ev_pop; t_start = 0.0, t_end = 1.0)
+            @test ev_snap.n_observed_units == 2
+            @test ev_snap.n_active_units == 2
+            @test ev_snap.mean_unit_rate == 2.0
+            @test ev_snap.active_fraction == 1.0
+            @test ev_snap.count_mean == 2.0
+            @test ev_snap.count_variance == 1.0
+            @test ev_snap.fano_factor == 0.5
+        end
+
+        @testset "n_total_units denominator semantics" begin
+            snap = population_spike_features(
+                pop;
+                t_start = 0.0,
+                t_end = 1.0,
+                n_total_units = 5,
+            )
+            @test snap.n_total_units == 5
+            @test snap.n_observed_units == 3
+            @test snap.mean_unit_rate ≈ 4 / 5
+            @test snap.active_fraction ≈ 2 / 5
+            @test snap.count_mean ≈ 4 / 5
+            # absent declared units contribute (0 - mean)^2 each
+            @test snap.count_variance ≈ (4.84 + 0.04 + 0.64 + 2 * 0.64) / 5
+            @test snap.fano_factor ≈ snap.count_variance / snap.count_mean
+
+            @test_throws ArgumentError population_spike_features(pop; n_total_units = 2)
+            @test_throws ArgumentError population_spike_features(pop; n_total_units = -1)
+
+            # declared-but-absent units on an empty population stay zeros
+            ghost = population_spike_features(
+                SpikeTrain{Float64,Int}[];
+                t_start = 0.0,
+                t_end = 1.0,
+                n_total_units = 4,
+            )
+            @test ghost.n_total_units == 4
+            @test ghost.n_observed_units == 0
+            @test ghost.count_mean == 0.0
+            @test isnan(ghost.fano_factor)
+        end
+
+        @testset "empty, silent, and single-unit populations" begin
+            for empty_pop in (SpikeTrain{Float64,Int}[], SpikeEvent{Float64,Int}[])
+                snap = population_spike_features(empty_pop; t_start = 0.0, t_end = 1.0)
+                @test snap.duration == 1.0
+                @test snap.n_total_units == 0
+                @test snap.n_observed_units == 0
+                @test snap.n_active_units == 0
+                @test snap.total_spike_count == 0
+                @test snap.population_rate == 0.0
+                @test snap.active_fraction == 0.0
+                @test snap.count_mean == 0.0
+                @test snap.count_variance == 0.0
+                @test isnan(snap.fano_factor)
+                @test isempty(unit_firing_rates(empty_pop))
+            end
+
+            # no edges at all: inferred duration is 0 and rates stay 0
+            bare = population_spike_features(SpikeTrain[])
+            @test bare.duration == 0.0
+            @test isnan(bare.fano_factor)
+
+            # silent population: all observed units carry zero in-window spikes
+            silent = population_spike_features(pop; t_start = 2.0, t_end = 3.0)
+            @test silent.duration == 1.0
+            @test silent.n_observed_units == 3
+            @test silent.n_active_units == 0
+            @test silent.population_rate == 0.0
+            @test silent.count_mean == 0.0
+            @test isnan(silent.fano_factor)
+
+            # inverted window: duration clamps to 0, nothing is counted
+            inverted = population_spike_features(pop; t_start = 1.0, t_end = 0.0)
+            @test inverted.duration == 0.0
+            @test inverted.total_spike_count == 0
+            @test inverted.population_rate == 0.0
+            @test isnan(inverted.fano_factor)
+
+            # zero-length window on a spike instant: counts are reported while
+            # rate fields stay 0 and count statistics remain meaningful
+            instant = population_spike_features(pop; t_start = 0.2, t_end = 0.2)
+            @test instant.duration == 0.0
+            @test instant.total_spike_count == 1
+            @test instant.n_active_units == 1
+            @test instant.population_rate == 0.0
+            @test instant.mean_unit_rate == 0.0
+            @test instant.count_mean ≈ 1 / 3
+            @test instant.count_variance ≈ 2 / 9
+            @test instant.fano_factor ≈ 2 / 3
+        end
+
+        @testset "heterogeneous and homogeneous rates" begin
+            het = [
+                SpikeTrain(1, [0.1, 0.2, 0.3, 0.4, 0.5]),
+                SpikeTrain(2, [0.1]),
+                SpikeTrain(3, Float64[]),
+            ]
+            snap = population_spike_features(het; t_start = 0.0, t_end = 2.0)
+            @test snap.count_mean ≈ 2.0
+            @test snap.count_variance ≈ (9 + 1 + 4) / 3
+            @test snap.fano_factor ≈ snap.count_variance / 2
+
+            # identical per-unit counts: zero count variance, Fano factor 0
+            hom = [SpikeTrain(id, [0.1, 0.2, 0.3]) for id = 1:3]
+            hom_snap = population_spike_features(hom; t_start = 0.0, t_end = 1.0)
+            @test hom_snap.count_variance == 0.0
+            @test hom_snap.fano_factor == 0.0
+        end
+
+        @testset "sparse and non-contiguous unit ids" begin
+            sparse_pop = [
+                SpikeTrain(-3, [0.1]),
+                SpikeTrain(0, Float64[]),
+                SpikeTrain(Int16(7), [0.2, 0.4]),
+                SpikeTrain(10^6, [0.3]),
+            ]
+            snap = population_spike_features(sparse_pop; t_start = 0.0, t_end = 1.0)
+            @test snap.n_observed_units == 4
+            @test snap.n_active_units == 3
+
+            rates = unit_firing_rates(sparse_pop; t_start = 0.0, t_end = 1.0)
+            @test [r.neuron_id for r in rates] == [-3, 0, 7, 10^6]
+            @test rates[1].neuron_id isa Int
+            @test rates[3].neuron_id isa Int16
+            @test rates[2].spike_count == 0
+            @test rates[2].firing_rate == 0.0
+            @test rates[3].firing_rate == 2.0
+
+            # out-of-window spikes still produce a zero-rate row
+            late = unit_firing_rates(sparse_pop; t_start = 0.0, t_end = 0.05)
+            @test length(late) == 4
+            @test all(r -> r.spike_count == 0 && r.firing_rate == 0.0, late)
+        end
+
+        @testset "per-unit firing rates" begin
+            rates = unit_firing_rates(pop; t_start = 0.0, t_end = 1.0)
+            @test length(rates) == 3
+            @test [r.neuron_id for r in rates] == [1, 7, 1003]
+            @test [r.spike_count for r in rates] == [3, 1, 0]
+            @test [r.firing_rate for r in rates] == [3.0, 1.0, 0.0]
+
+            solo = unit_firing_rates(SpikeTrain(9, [0.1, 0.9]))
+            @test length(solo) == 1
+            @test solo[1].neuron_id == 9
+            @test solo[1].firing_rate ≈ 2 / 0.8
+
+            # sum of per-unit rates is the population rate
+            snap = population_spike_features(pop; t_start = 0.0, t_end = 1.0)
+            @test sum(r.firing_rate for r in rates) == snap.population_rate
+        end
+
+        @testset "SpikeFeatureStream integration" begin
+            stream = SpikeFeatureStream(window = 0.1, step = 0.1, t_start = 0.0)
+            @test population_spike_features(stream) === nothing
+            @test unit_firing_rates(stream) === nothing
+
+            for ev in (SpikeEvent(0.21, 1), SpikeEvent(0.22, 2), SpikeEvent(0.23, 1))
+                push!(stream, ev)
+            end
+            snap = population_spike_features(stream)
+            @test snap isa PopulationFeatureSnapshot
+            @test snap.duration ≈ 0.1
+            @test snap.n_observed_units == 2
+            @test snap.n_active_units == 2
+            @test snap.total_spike_count == 3
+            @test snap.population_rate ≈ 30.0
+            @test snap.mean_unit_rate ≈ 15.0
+            @test snap.count_mean ≈ 1.5
+            @test snap.count_variance ≈ 0.25
+            @test snap.fano_factor ≈ 1 / 6
+
+            rates = unit_firing_rates(stream)
+            @test [r.neuron_id for r in rates] == [1, 2]
+            @test [r.spike_count for r in rates] == [2, 1]
+            @test rates[1].firing_rate ≈ 20.0
+            @test rates[2].firing_rate ≈ 10.0
+
+            # stream snapshot rows equal the equivalent batch window
+            batch = population_spike_features(
+                [SpikeEvent(0.21, 1), SpikeEvent(0.22, 2), SpikeEvent(0.23, 1)];
+                t_start = 0.2,
+                t_end = 0.3,
+            )
+            @test batch.total_spike_count == snap.total_spike_count
+            @test batch.count_mean ≈ snap.count_mean
+            @test batch.count_variance ≈ snap.count_variance
+
+            # n_total_units applies on the stream path too
+            wide = population_spike_features(stream; n_total_units = 10)
+            @test wide.n_total_units == 10
+            @test wide.active_fraction ≈ 2 / 10
         end
     end
 
