@@ -1360,6 +1360,33 @@ Base.isfinite(x::ConversionProbe) = isfinite(x.value)
             ).total_spike_count == 0
         end
 
+        @testset "train and event overloads count identical windows" begin
+            # Float64() rounds numerator and denominator separately, so it
+            # can reverse the order of close rationals: these times are
+            # exactly increasing but their Float64 images swap
+            n = Int64(2)^53
+            times = Rational{Int64}[(n+6)//(n+5), (n+4)//(n+3)]
+            @test issorted(times)
+            @test Float64(times[1]) > Float64(times[2])
+            trs = SpikeTrain[SpikeTrain(1, times)]
+            evs = SpikeEvent[SpikeEvent(t, 1) for t in times]
+            for p in (trs, evs)
+                snap = population_spike_features(p; t_start = 0.0, t_end = 1.0)
+                @test snap.total_spike_count == 1
+            end
+
+            # Float64(b-1) rounds up to Float64(b): the exact window is
+            # inverted even though the spike meets each converted bound
+            b = 1_700_000_000_000_000_000
+            @test Float64(b - 1) == Float64(b)
+            for p in (SpikeEvent[SpikeEvent(b - 1, 1)], SpikeTrain[SpikeTrain(1, [b - 1])])
+                snap = population_spike_features(p; t_start = Float64(b), t_end = b - 1)
+                @test snap.total_spike_count == 0
+                # the unit is still observed even with nothing counted
+                @test snap.n_observed_units == 1
+            end
+        end
+
         @testset "high-precision bounds keep duration precision" begin
             # BigFloat bounds closer than Float64 resolution: the window
             # still contains a spike, so the rate must not be 0

@@ -124,11 +124,19 @@ function _population_window_counts(
             length(times)
         elseif empty_window
             0
+        elseif (lo isa AbstractFloat || hi isa AbstractFloat) &&
+               !(eltype(times) <: Union{Integer,AbstractFloat})
+            # Float64() can reverse the order of close rational timestamps
+            # (it rounds numerator and denominator separately), so a
+            # by=Float64 search is invalid on this element type — scan with
+            # the same predicates as the event overload instead.
+            count(t -> !_population_below_lo(t, lo) && !_population_above_hi(t, hi), times)
         else
             # Train times are stored sorted; searching them directly avoids
             # re-sorting a copy. An AbstractFloat bound searches the Float64
-            # image of the times (still sorted; same domain `spike_count`
-            # uses), an exact bound searches the stored values.
+            # image of the times (Float64 conversion preserves order for
+            # integer and floating-point times), an exact bound searches the
+            # stored values.
             left = if lo isa AbstractFloat
                 searchsortedfirst(times, lo; by = Float64)
             else
@@ -160,17 +168,21 @@ function _population_window_counts(
     E = eltype(events)
     counts = Dict{isconcretetype(E) ? fieldtype(E, :neuron_id) : Integer,Int}()
     need_extrema = isnothing(t_start) || isnothing(t_end)
+    unbounded = isnothing(t_start) && isnothing(t_end)
     lo = isnothing(t_start) ? -Inf : t_start
     hi = isnothing(t_end) ? Inf : t_end
+    empty_window = !unbounded && isless(hi, lo)
     tmin = nothing
     tmax = nothing
     for ev in events
         t = ev.time
         isfinite(t) || throw(ArgumentError("spike times must be finite"))
         c = get(counts, ev.neuron_id, 0)
-        # Same bound-precision rule as the sorted-search train path, so both
-        # overloads count identical windows.
-        if !_population_below_lo(t, lo) && !_population_above_hi(t, hi)
+        # Same bound-precision and inverted-window rules as the train path,
+        # so both overloads count identical windows. The unbounded case skips
+        # the per-event bound conversions entirely.
+        if !empty_window &&
+           (unbounded || (!_population_below_lo(t, lo) && !_population_above_hi(t, hi)))
             c += 1
         end
         counts[ev.neuron_id] = c
