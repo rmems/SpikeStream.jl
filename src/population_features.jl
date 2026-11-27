@@ -124,12 +124,14 @@ function _population_window_counts(
             length(times)
         elseif empty_window
             0
-        elseif (lo isa AbstractFloat || hi isa AbstractFloat) &&
+        elseif (t_start isa AbstractFloat || t_end isa AbstractFloat) &&
                !(eltype(times) <: Union{Integer,AbstractFloat})
             # Float64() can reverse the order of close rational timestamps
             # (it rounds numerator and denominator separately), so a
             # by=Float64 search is invalid on this element type — scan with
-            # the same predicates as the event overload instead.
+            # the same predicates as the event overload instead. Only a
+            # declared float bound forces this: a missing bound's ±Inf
+            # sentinel searches to the array edge even on misordered images.
             count(t -> !_population_below_lo(t, lo) && !_population_above_hi(t, hi), times)
         else
             # Train times are stored sorted; searching them directly avoids

@@ -1375,6 +1375,16 @@ Base.isfinite(x::ConversionProbe) = isfinite(x.value)
                 @test snap.total_spike_count == 1
             end
 
+            # one-sided exact windows search the sorted rational times
+            # directly: the omitted bound's ±Inf sentinel must not force a
+            # misordered Float64-image scan
+            for p in (trs, evs)
+                @test population_spike_features(p; t_end = times[1]).total_spike_count == 1
+                @test population_spike_features(p; t_start = times[2]).total_spike_count ==
+                      1
+                @test population_spike_features(p; t_end = times[2]).total_spike_count == 2
+            end
+
             # Float64(b-1) rounds up to Float64(b): the exact window is
             # inverted even though the spike meets each converted bound
             b = 1_700_000_000_000_000_000
