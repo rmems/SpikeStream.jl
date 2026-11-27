@@ -1513,6 +1513,44 @@ Base.BigFloat(t::CmpTick) = BigFloat(t.value)
             end
         end
 
+        @testset "duration conversion covers the Float64 range" begin
+            # subnormal span: the smallest representable positive duration
+            snap = population_spike_features(
+                [SpikeEvent(5e-324, 1)];
+                t_start = 0.0,
+                t_end = 5e-324,
+            )
+            @test snap.duration == 5e-324
+            @test snap.total_spike_count == 1
+
+            # binade boundary: a span just below 2.0 rounds up through the
+            # top significand bit rather than truncating
+            snap = population_spike_features(
+                [SpikeEvent(1.0, 1)];
+                t_start = 0 // 1,
+                t_end = (big(2)^54 - 1) // big(2)^53,
+            )
+            @test snap.duration == 2.0
+            @test snap.total_spike_count == 1
+
+            # spans past binary64 overflow to +Inf; the same span inverted
+            # still clamps to 0
+            snap = population_spike_features(
+                [SpikeEvent(1.0, 1)];
+                t_start = -1.5e308,
+                t_end = 1.5e308,
+            )
+            @test snap.duration == Inf
+            @test snap.total_spike_count == 1
+            snap = population_spike_features(
+                [SpikeEvent(1.0, 1)];
+                t_start = 1.5e308,
+                t_end = -1.5e308,
+            )
+            @test snap.duration == 0.0
+            @test snap.total_spike_count == 0
+        end
+
         @testset "omitted bounds never convert or scan timestamps" begin
             # an omitted bound's ±Inf sentinel is internal — an exact-bound
             # window over timestamps without a Float64 conversion must not
