@@ -67,10 +67,25 @@ function _resolve_n_total_units(n_total_units, n_observed::Int)::Int
     return n
 end
 
-function _population_duration(tmin::Float64, tmax::Float64, t_start, t_end)::Float64
-    lo = isnothing(t_start) ? tmin : Float64(t_start)
-    hi = isnothing(t_end) ? tmax : Float64(t_end)
-    return max(0.0, hi - lo)
+function _population_duration(tmin, tmax, n_spikes::Int, t_start, t_end)::Float64
+    if isnothing(t_start) || isnothing(t_end)
+        # Same sparse-input rule as `spike_density`: an inferred edge is
+        # undefined for fewer than two spikes.
+        n_spikes < 2 && return 0.0
+        lo = isnothing(t_start) ? tmin : t_start
+        hi = isnothing(t_end) ? tmax : t_end
+    else
+        lo = t_start
+        hi = t_end
+    end
+    # Subtract in the input's own precision: converting large integer
+    # endpoints to Float64 first can collapse distinct bounds to one value.
+    d = if lo isa Integer && hi isa Integer
+        Float64(BigInt(hi) - BigInt(lo))
+    else
+        Float64(hi) - Float64(lo)
+    end
+    return max(0.0, d)
 end
 
 function _population_window_counts(
@@ -78,19 +93,34 @@ function _population_window_counts(
     t_start = nothing,
     t_end = nothing,
 )
-    counts = Dict{Integer,Int}()
-    tmin = Inf
-    tmax = -Inf
+    T = eltype(trains)
+    counts = Dict{isconcretetype(T) ? fieldtype(T, :neuron_id) : Integer,Int}()
+    unbounded = isnothing(t_start) && isnothing(t_end)
+    lo = isnothing(t_start) ? -Inf : t_start
+    hi = isnothing(t_end) ? Inf : t_end
+    empty_window = !unbounded && isless(hi, lo)
+    tmin = nothing
+    tmax = nothing
+    n_spikes = 0
     for train in trains
         times = train.times
-        counts[train.neuron_id] =
-            get(counts, train.neuron_id, 0) +
-            spike_count(times; t_start = t_start, t_end = t_end)
+        n_spikes += length(times)
+        c = if unbounded
+            length(times)
+        elseif empty_window
+            0
+        else
+            # Train times are stored sorted; searching them directly avoids
+            # re-sorting a copy and keeps the raw-bound `isless` ordering
+            # (and precision) that `spike_count` applies after conversion.
+            max(0, searchsortedlast(times, hi) - searchsortedfirst(times, lo) + 1)
+        end
+        counts[train.neuron_id] = get(counts, train.neuron_id, 0) + c
         isempty(times) && continue
-        tmin = min(tmin, Float64(first(times)))
-        tmax = max(tmax, Float64(last(times)))
+        tmin = isnothing(tmin) ? first(times) : min(tmin, first(times))
+        tmax = isnothing(tmax) ? last(times) : max(tmax, last(times))
     end
-    return counts, tmin, tmax
+    return counts, tmin, tmax, n_spikes
 end
 
 function _population_window_counts(
@@ -98,23 +128,26 @@ function _population_window_counts(
     t_start = nothing,
     t_end = nothing,
 )
-    lo = isnothing(t_start) ? -Inf : Float64(t_start)
-    hi = isnothing(t_end) ? Inf : Float64(t_end)
-    counts = Dict{Integer,Int}()
-    tmin = Inf
-    tmax = -Inf
+    E = eltype(events)
+    counts = Dict{isconcretetype(E) ? fieldtype(E, :neuron_id) : Integer,Int}()
+    lo = isnothing(t_start) ? -Inf : t_start
+    hi = isnothing(t_end) ? Inf : t_end
+    tmin = nothing
+    tmax = nothing
     for ev in events
-        t = Float64(ev.time)
+        t = ev.time
         isfinite(t) || throw(ArgumentError("spike times must be finite"))
         c = get(counts, ev.neuron_id, 0)
-        if lo <= t <= hi
+        # Same `isless` boundary order as the sorted-search train path, so
+        # signed zeros and large integer times behave identically.
+        if !isless(t, lo) && !isless(hi, t)
             c += 1
         end
         counts[ev.neuron_id] = c
-        tmin = min(tmin, t)
-        tmax = max(tmax, t)
+        tmin = isnothing(tmin) ? t : min(tmin, t)
+        tmax = isnothing(tmax) ? t : max(tmax, t)
     end
-    return counts, tmin, tmax
+    return counts, tmin, tmax, length(events)
 end
 
 function _population_snapshot(
@@ -223,9 +256,9 @@ function population_spike_features(
     t_end = nothing,
     n_total_units::Union{Nothing,Integer} = nothing,
 )::PopulationFeatureSnapshot
-    counts, tmin, tmax =
+    counts, tmin, tmax, n_spikes =
         _population_window_counts(population; t_start = t_start, t_end = t_end)
-    duration = _population_duration(tmin, tmax, t_start, t_end)
+    duration = _population_duration(tmin, tmax, n_spikes, t_start, t_end)
     n_total = _resolve_n_total_units(n_total_units, length(counts))
     return _population_snapshot(counts, duration, n_total)
 end
@@ -266,9 +299,9 @@ duration semantics as [`population_spike_features`](@ref); it is `0` whenever
 the window `duration <= 0`.
 """
 function unit_firing_rates(population::_SpikePopulation; t_start = nothing, t_end = nothing)
-    counts, tmin, tmax =
+    counts, tmin, tmax, n_spikes =
         _population_window_counts(population; t_start = t_start, t_end = t_end)
-    duration = _population_duration(tmin, tmax, t_start, t_end)
+    duration = _population_duration(tmin, tmax, n_spikes, t_start, t_end)
     rows = UnitRateRow[
         (neuron_id = id, spike_count = c, firing_rate = duration > 0 ? c / duration : 0.0) for (id, c) in counts
     ]
@@ -281,11 +314,14 @@ unit_firing_rates(train::SpikeTrain; kwargs...) =
 function unit_firing_rates(stream::SpikeFeatureStream)
     snap = snapshot(stream)
     snap === nothing && return nothing
-    return UnitRateRow[
-        (
-            neuron_id = row.neuron_id,
-            spike_count = row.features.count,
-            firing_rate = row.features.density,
-        ) for row in snap.neurons
-    ]
+    return sort!(
+        UnitRateRow[
+            (
+                neuron_id = row.neuron_id,
+                spike_count = row.features.count,
+                firing_rate = row.features.density,
+            ) for row in snap.neurons
+        ];
+        by = row -> row.neuron_id,
+    )
 end

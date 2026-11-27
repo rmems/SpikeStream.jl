@@ -1188,6 +1188,118 @@ Base.isfinite(x::ConversionProbe) = isfinite(x.value)
             @test sum(r.firing_rate for r in rates) == snap.population_rate
         end
 
+        @testset "inferred duration needs two spikes" begin
+            # one spike + one explicit bound: inferred edge is undefined, so
+            # duration (and therefore every rate) is 0 — same rule as
+            # spike_density — while the count is still reported
+            for singleton in ([SpikeTrain(1, [0.999])], [SpikeEvent(0.999, 1)])
+                snap = population_spike_features(singleton; t_end = 1.0)
+                @test snap.duration == 0.0
+                @test snap.total_spike_count == 1
+                @test snap.population_rate == 0.0
+                rates = unit_firing_rates(singleton; t_end = 1.0)
+                @test rates[1].spike_count == 1
+                @test rates[1].firing_rate == 0.0
+            end
+            for singleton in ([SpikeTrain(1, [0.5])], [SpikeEvent(0.5, 1)])
+                snap = population_spike_features(singleton; t_start = 0.0)
+                @test snap.duration == 0.0
+                @test snap.total_spike_count == 1
+                @test snap.population_rate == 0.0
+                @test unit_firing_rates(singleton; t_start = 0.0)[1].firing_rate == 0.0
+            end
+
+            # both bounds explicit: a single spike keeps a positive duration
+            snap = population_spike_features(
+                [SpikeTrain(1, [0.5])];
+                t_start = 0.0,
+                t_end = 1.0,
+            )
+            @test snap.duration == 1.0
+            @test snap.population_rate == 1.0
+            @test unit_firing_rates([SpikeEvent(0.5, 1)]; t_start = 0.0, t_end = 1.0)[1].firing_rate ==
+                  1.0
+
+            # two or more spikes still infer a positive span
+            two = population_spike_features(
+                [SpikeTrain(1, [0.5]), SpikeTrain(2, [0.9])];
+                t_start = 0.0,
+            )
+            @test two.duration ≈ 0.9
+            @test two.population_rate ≈ 2 / 0.9
+        end
+
+        @testset "large integer timestamps keep their precision" begin
+            # Float64 spacing around b is 256: distinct integer endpoints and
+            # spike times collapse to one value when converted first
+            b = 1_700_000_000_000_000_000
+            @test Float64(b) == Float64(b + 100)
+
+            for p in ([SpikeTrain(1, [b + 50])], [SpikeEvent(b + 50, 1)])
+                snap = population_spike_features(p; t_start = b, t_end = b + 100)
+                @test snap.duration == 100.0
+                @test snap.total_spike_count == 1
+                @test snap.population_rate ≈ 0.01
+                rates = unit_firing_rates(p; t_start = b, t_end = b + 100)
+                @test rates[1].spike_count == 1
+                @test rates[1].firing_rate ≈ 0.01
+            end
+
+            # an event just outside the window must stay uncounted
+            for p in ([SpikeTrain(1, [b + 150])], [SpikeEvent(b + 150, 1)])
+                snap = population_spike_features(p; t_start = b, t_end = b + 100)
+                @test snap.total_spike_count == 0
+                @test snap.n_active_units == 0
+                @test snap.population_rate == 0.0
+            end
+
+            # inferred edges keep integer precision too
+            snap = population_spike_features([
+                SpikeTrain(1, [b + 50]),
+                SpikeTrain(2, [b + 60]),
+            ])
+            @test snap.duration == 10.0
+            @test snap.population_rate ≈ 0.2
+        end
+
+        @testset "signed-zero bounds are representation-independent" begin
+            neg_train = SpikeTrain(7, [-0.0])
+            pos_train = SpikeTrain(7, [0.0])
+            for (tr, t_start, t_end) in (
+                (neg_train, 0.0, 1.0),
+                (pos_train, -1.0, -0.0),
+                (neg_train, -0.0, -0.0),
+                (pos_train, -0.0, -0.0),
+                (neg_train, -0.0, 1.0),
+            )
+                by_train = population_spike_features([tr]; t_start = t_start, t_end = t_end)
+                by_event = population_spike_features(
+                    spike_events(tr);
+                    t_start = t_start,
+                    t_end = t_end,
+                )
+                @test by_train.total_spike_count == by_event.total_spike_count
+                @test by_train.population_rate == by_event.population_rate
+            end
+
+            # isless orders -0.0 before 0.0, so a -0.0 spike sits below a 0.0
+            # lower bound while a 0.0 spike sits above a -0.0 upper bound
+            @test population_spike_features([neg_train]; t_start = 0.0, t_end = 1.0).total_spike_count ==
+                  0
+            @test population_spike_features(
+                spike_events(neg_train);
+                t_start = 0.0,
+                t_end = 1.0,
+            ).total_spike_count == 0
+            @test population_spike_features([pos_train]; t_start = -1.0, t_end = -0.0).total_spike_count ==
+                  0
+            @test population_spike_features(
+                spike_events(neg_train);
+                t_start = -0.0,
+                t_end = -0.0,
+            ).total_spike_count == 1
+        end
+
         @testset "SpikeFeatureStream integration" begin
             stream = SpikeFeatureStream(window = 0.1, step = 0.1, t_start = 0.0)
             @test population_spike_features(stream) === nothing
@@ -1210,6 +1322,7 @@ Base.isfinite(x::ConversionProbe) = isfinite(x.value)
 
             rates = unit_firing_rates(stream)
             @test [r.neuron_id for r in rates] == [1, 2]
+            @test issorted([r.neuron_id for r in rates])
             @test [r.spike_count for r in rates] == [2, 1]
             @test rates[1].firing_rate ≈ 20.0
             @test rates[2].firing_rate ≈ 10.0
