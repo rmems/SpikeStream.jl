@@ -1706,19 +1706,32 @@ Base.BigFloat(t::CmpTick) = BigFloat(t.value)
         @test_throws ArgumentError coincidence_count([0.1, NaN], [0.1])
         @test_throws ArgumentError pairwise_synchrony([a, identical]; t_start = NaN)
         @test_throws ArgumentError population_synchrony([a, identical]; t_end = Inf)
-        # finite but unrepresentable times overflow Float64 -> rejected
-        @test_throws ArgumentError coincidence_count(
-            SpikeTrain(1, [big(10.0)^400]),
-            SpikeTrain(2, [0.1]),
+
+        # times keep their native type — no Float64 rounding — so adjacent
+        # large integer or high-precision timestamps are not conflated
+        @test coincidence_count(
+            SpikeTrain(1, [Int64(10)^18]),
+            SpikeTrain(2, [Int64(10)^18 + 1]);
+            tolerance = 0,
+        ) == 0
+        @test coincidence_count([Int64(10)^18], [Int64(10)^18 + 1]; tolerance = 0) == 0
+        @test coincidence_count(
+            SpikeTrain(1, [big(0.1)]),
+            SpikeTrain(2, [0.1]);
+            tolerance = 0,
+        ) == 1
+        @test pairwise_synchrony(
+            [SpikeEvent(Int64(10)^18, 1), SpikeEvent(Int64(10)^18 + 1, 2)];
+            tolerance = 0,
+        )[1].coincidence_count == 0
+        # -0.0 classifies identically for trains (searchsorted) and events
+        @test pairwise_synchrony(
+            [SpikeTrain(1, [-0.0, 0.5]), SpikeTrain(2, [0.5])];
+            t_start = 0.0,
+        ) == pairwise_synchrony(
+            [SpikeEvent(-0.0, 1), SpikeEvent(0.5, 1), SpikeEvent(0.5, 2)];
+            t_start = 0.0,
         )
-        @test_throws ArgumentError pairwise_synchrony([
-            SpikeTrain(1, [big(10.0)^400]),
-            SpikeTrain(2, [0.1]),
-        ])
-        @test_throws ArgumentError pairwise_synchrony([
-            SpikeEvent(big(10.0)^400, 1),
-            SpikeEvent(0.1, 2),
-        ])
 
         # pairwise over sparse, non-contiguous, negative ids — sorted rows
         trains = [
@@ -1729,6 +1742,7 @@ Base.BigFloat(t::CmpTick) = BigFloat(t.value)
         ]
         rows = pairwise_synchrony(trains; tolerance = 0.01)
         @test isconcretetype(eltype(rows))
+        @test fieldtype(eltype(rows), :id_a) == Int
         @test length(rows) == 6
         @test [(r.id_a, r.id_b) for r in rows] == [(-2, 7), (-2, 20), (-2, 1003), (7, 20), (7, 1003), (20, 1003)]
         @test rows[3].coincidence_count == 2      # (-2, 1003): both spikes match
@@ -1746,6 +1760,16 @@ Base.BigFloat(t::CmpTick) = BigFloat(t.value)
         @test event_rows == [r for r in rows if r.id_a != 20 && r.id_b != 20]
         @test pairwise_synchrony(reverse(events); tolerance = 0.01) == event_rows
         @test pairwise_synchrony(reverse(trains); tolerance = 0.01) == rows
+
+        # mixed integer id types widen the row field to Integer instead of
+        # forcing a lossy conversion
+        mixed_ids = pairwise_synchrony(
+            [SpikeTrain(UInt64(5), [0.1]), SpikeTrain(Int32(-1), [0.1])];
+            tolerance = 0.0,
+        )
+        @test fieldtype(eltype(mixed_ids), :id_a) == Integer
+        @test (mixed_ids[1].id_a, mixed_ids[1].id_b) == (-1, 0x5)
+        @test mixed_ids[1].coincidence_count == 1
 
         # trains sharing a neuron_id merge into one unit
         merged = pairwise_synchrony(

@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 
-const SynchronyPairRow = @NamedTuple{
-    id_a::Integer,
-    id_b::Integer,
-    coincidence_count::Int,
-    coincidence_rate::Float64,
-}
+SynchronyPairRow{I} =
+    @NamedTuple{id_a::I, id_b::I, coincidence_count::Int, coincidence_rate::Float64}
 
 const _SyncPair = Union{SpikeTrain,AbstractVector{<:Real}}
 const _SyncPopulation = Union{AbstractVector{<:SpikeTrain},AbstractVector{<:SpikeEvent}}
@@ -23,26 +19,26 @@ function _check_sync_bound(value, name)::Float64
     return v
 end
 
-_pair_times(times::AbstractVector{<:Real}) = _sorted_finite_times(times)
-_pair_times(train::SpikeTrain{Float64}) = spike_times(train)
-function _pair_times(train::SpikeTrain)
-    times = Float64.(spike_times(train))
-    all(isfinite, times) || throw(ArgumentError("spike times must be finite"))
-    return times
+function _pair_times(times::AbstractVector{T}) where {T<:Real}
+    v = Vector{T}(undef, length(times))
+    copyto!(v, times)
+    all(isfinite, v) || throw(ArgumentError("spike times must be finite"))
+    return sort!(v)
 end
+_pair_times(train::SpikeTrain) = spike_times(train)
 
 function _coincidence_pairs(
-    a::AbstractVector{Float64},
-    b::AbstractVector{Float64},
+    a::AbstractVector{<:Real},
+    b::AbstractVector{<:Real},
     tol::Float64,
 )::Int
     i, j = firstindex(a), firstindex(b)
     count = 0
     while i <= lastindex(a) && j <= lastindex(b)
-        d = a[i] - b[j]
-        if d > tol
+        ai, bj = a[i], b[j]
+        if ai > bj && ai - bj > tol
             j += 1
-        elseif d < -tol
+        elseif bj > ai && bj - ai > tol
             i += 1
         else
             count += 1
@@ -56,6 +52,15 @@ end
 _rate_from(count::Int, n_a::Int, n_b::Int)::Float64 =
     n_a + n_b > 0 ? 2 * count / (n_a + n_b) : 0.0
 
+# Ids keep a shared concrete type when the population is homogeneous; mixed
+# id types widen to `Integer` rather than forcing a lossy conversion.
+function _sorted_ids(grouped::AbstractDict{Integer})
+    raw = sort!(collect(keys(grouped)))
+    isempty(raw) && return Int[]
+    allequal(typeof.(raw)) && return Vector{typeof(first(raw))}(raw)
+    return raw
+end
+
 function _unit_time_map(
     trains::AbstractVector{<:SpikeTrain};
     t_start = nothing,
@@ -63,19 +68,18 @@ function _unit_time_map(
 )
     lo = isnothing(t_start) ? -Inf : _check_sync_bound(t_start, "t_start")
     hi = isnothing(t_end) ? Inf : _check_sync_bound(t_end, "t_end")
-    grouped = Dict{Integer,Vector{Float64}}()
+    T = isempty(trains) ? Float64 : mapfoldl(tr -> eltype(tr.times), promote_type, trains)
+    grouped = Dict{Integer,Vector{T}}()
     for tr in trains
-        v = get!(grouped, tr.neuron_id, Float64[])
+        v = get!(() -> T[], grouped, tr.neuron_id)
         left = searchsortedfirst(tr.times, lo)
         right = searchsortedlast(tr.times, hi)
         for k = left:right
-            t = Float64(tr.times[k])
-            isfinite(t) || throw(ArgumentError("spike times must be finite"))
-            push!(v, t)
+            push!(v, tr.times[k])
         end
     end
-    ids = sort!(collect(keys(grouped)))
-    times = Vector{Float64}[sort!(grouped[id]) for id in ids]
+    ids = _sorted_ids(grouped)
+    times = [sort!(grouped[id]) for id in ids]
     return ids, times
 end
 
@@ -86,15 +90,16 @@ function _unit_time_map(
 )
     lo = isnothing(t_start) ? -Inf : _check_sync_bound(t_start, "t_start")
     hi = isnothing(t_end) ? Inf : _check_sync_bound(t_end, "t_end")
-    grouped = Dict{Integer,Vector{Float64}}()
+    T = isempty(events) ? Float64 : mapfoldl(ev -> typeof(ev.time), promote_type, events)
+    grouped = Dict{Integer,Vector{T}}()
     for ev in events
-        v = get!(grouped, ev.neuron_id, Float64[])
-        t = Float64(ev.time)
-        isfinite(t) || throw(ArgumentError("spike times must be finite"))
-        lo <= t <= hi && push!(v, t)
+        v = get!(() -> T[], grouped, ev.neuron_id)
+        # isless bounds match the searchsorted order used for trains, so
+        # e.g. -0.0 vs 0.0 classifies identically on both input paths
+        (!isless(ev.time, lo) && !isless(hi, ev.time)) && push!(v, ev.time)
     end
-    ids = sort!(collect(keys(grouped)))
-    times = Vector{Float64}[sort!(grouped[id]) for id in ids]
+    ids = _sorted_ids(grouped)
+    times = [sort!(grouped[id]) for id in ids]
     return ids, times
 end
 
@@ -103,12 +108,14 @@ end
 
 Count coincident spike pairs between two trains. `a` and `b` may each be a
 [`SpikeTrain`](@ref) or an `AbstractVector{<:Real}` of spike times (unsorted
-vectors are sorted and checked like the other timestamp-vector APIs).
+vectors are sorted and finite-checked).
 
 Two spikes **coincide** when `|t_a - t_b| <= tolerance`. `tolerance` must be a
 finite value `>= 0` in the same time unit as the inputs (default `0.005`,
 i.e. 5 ms when times are seconds); `tolerance = 0` counts only exactly
-simultaneous spikes.
+simultaneous spikes. Times are compared in their native numeric type — there
+is no `Float64` rounding — so huge integer or high-precision timestamps that
+look equal in `Float64` still count correctly.
 
 Matching is one-to-one: every spike belongs to at most one coincidence pair,
 and the count is the maximum number of disjoint pairs. It is computed
@@ -162,10 +169,10 @@ involving silent units report zeros.
 
 `t_start`/`t_end` restrict the comparison to spikes inside the inclusive
 window `[t_start, t_end]` (the same bounds [`spike_count`](@ref) uses). Units
-with no in-window spikes still appear, as observed-silent pairs. Because
-in-window times are sliced by binary search and each pair is matched in a
-single linear sweep, cost is bounded by in-window spike counts
-(`O(Σ (n_a + n_b))` over all pairs), never `O(N^2 * history)`.
+with no in-window spikes still appear, as observed-silent pairs. Trains slice
+in-window times by binary search; event inputs group and filter in a single
+pass. Either way the matching itself stays bounded: `O(Σ (n_a + n_b))` over
+all pairs on in-window times, never `O(N^2 * history)`.
 """
 function pairwise_synchrony(
     population::_SyncPopulation;
@@ -176,7 +183,8 @@ function pairwise_synchrony(
     tol = _check_sync_tolerance(tolerance)
     ids, times = _unit_time_map(population; t_start = t_start, t_end = t_end)
     n = length(ids)
-    rows = SynchronyPairRow[]
+    RowT = SynchronyPairRow{eltype(ids)}
+    rows = RowT[]
     sizehint!(rows, n * (n - 1) ÷ 2)
     for i = 1:(n-1)
         a = times[i]
@@ -184,12 +192,7 @@ function pairwise_synchrony(
             c = _coincidence_pairs(a, times[j], tol)
             push!(
                 rows,
-                (
-                    id_a = ids[i],
-                    id_b = ids[j],
-                    coincidence_count = c,
-                    coincidence_rate = _rate_from(c, length(a), length(times[j])),
-                ),
+                RowT((ids[i], ids[j], c, _rate_from(c, length(a), length(times[j])))),
             )
         end
     end
