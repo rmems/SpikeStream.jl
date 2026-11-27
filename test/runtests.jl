@@ -1448,7 +1448,8 @@ Base.BigFloat(t::CmpTick) = BigFloat(t.value)
 
         @testset "infinite bounds never make duration NaN" begin
             # equal infinite bounds span a zero-length window — Inf - Inf
-            # would otherwise produce NaN, violating duration >= 0
+            # would otherwise produce NaN, violating duration >= 0. Equal
+            # infinities across types (=== misses them) behave the same way.
             for p in ([SpikeEvent(0.5, 1)], [SpikeTrain(1, [0.5])])
                 snap = population_spike_features(p; t_start = Inf, t_end = Inf)
                 @test snap.duration == 0.0
@@ -1460,6 +1461,18 @@ Base.BigFloat(t::CmpTick) = BigFloat(t.value)
                 @test snap.duration == 0.0
                 snap = population_spike_features(p; t_start = -Inf, t_end = Inf)
                 @test snap.duration == Inf
+                for (a, b) in (
+                    (Inf32, Inf),
+                    (Inf, Inf32),
+                    (Float32(-Inf), -Inf),
+                    (big"Inf", Inf),
+                    (big"Inf", big"Inf"),
+                    (big"-Inf", big"-Inf"),
+                )
+                    snap = population_spike_features(p; t_start = a, t_end = b)
+                    @test snap.duration == 0.0
+                    @test !isnan(snap.population_rate)
+                end
             end
         end
 
@@ -1476,6 +1489,27 @@ Base.BigFloat(t::CmpTick) = BigFloat(t.value)
                 @test snap.duration == 2.0^-10
                 @test snap.population_rate ≈ 2.0^10
                 @test snap.total_spike_count == 1
+            end
+
+            # differences needing more significant bits than the ambient
+            # precision still round correctly: Float64(::Rational{BigInt})
+            # would lose them converting through BigFloat
+            for (a, b, want) in (
+                (0, 257, 257.0),
+                (0, Int64(2)^53 + 3, Float64(Int64(2)^53 + 3)),
+                (1 // 7, 1024 // 7, Float64(1023 // 7)),
+                (1, 1 + 1 // 1023, Float64(1 // 1023)),
+            )
+                snap = setprecision(BigFloat, 8) do
+                    population_spike_features([ev]; t_start = a, t_end = b)
+                end
+                @test snap.duration == want
+                @test snap.population_rate ≈ 1 / want
+                @test snap.total_spike_count == 1
+                rates = setprecision(BigFloat, 8) do
+                    unit_firing_rates([ev]; t_start = a, t_end = b)
+                end
+                @test only(rates).firing_rate ≈ 1 / want
             end
         end
 

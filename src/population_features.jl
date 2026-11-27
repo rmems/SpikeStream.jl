@@ -67,6 +67,40 @@ function _resolve_n_total_units(n_total_units, n_observed::Int)::Int
     return n
 end
 
+# Float64(::Rational{BigInt}) converts numerator and denominator through
+# BigFloat at the ambient precision, so the binary64 rounding is done here
+# instead: pin down the exponent from bit lengths, then take the leading
+# significand bits with one exact divrem and round-half-even on the
+# remainder. The result never depends on the ambient BigFloat precision.
+function _rational_to_float64(q::Rational{BigInt})::Float64
+    iszero(q) && return 0.0
+    neg = q < 0
+    n, d = abs(numerator(q)), denominator(q)
+    # bits(n)-bits(d) brackets floor(log2(n/d)) to {e-1, e}; one scaled
+    # integer comparison resolves which
+    e = ndigits(n; base = 2) - ndigits(d; base = 2)
+    if e >= 0 ? n < (d << e) : (n << -e) < d
+        e -= 1
+    end
+    # normal range takes the 53 leading bits of n/d at scale 2^(52-e);
+    # below it the subnormal scale is fixed at 2^1074
+    s = e >= -1022 ? 52 - e : 1074
+    den = d << max(-s, 0)
+    m, r = divrem(n << max(s, 0), den)
+    (r + r > den || (r + r == den && isodd(m))) && (m += 1)
+    bits = if e >= -1022
+        if m == big(1) << 53  # rounded up into the next binade
+            m >>= 1
+            e += 1
+        end
+        e > 1023 && return neg ? -Inf : Inf
+        (UInt64(e + 1023) << 52) | UInt64(m - (big(1) << 52))
+    else
+        UInt64(m)  # subnormal fraction; m <= 2^52
+    end
+    return reinterpret(Float64, (UInt64(neg) << 63) | bits)
+end
+
 function _population_duration(tmin, tmax, n_spikes::Int, t_start, t_end)::Float64
     if isnothing(t_start) || isnothing(t_end)
         # Same sparse-input rule as `spike_density`: an inferred edge is
@@ -82,21 +116,26 @@ function _population_duration(tmin, tmax, n_spikes::Int, t_start, t_end)::Float6
     if !isfinite(lo) || !isfinite(hi)
         # ±Inf has no exact-rational image, so subtract in Float64. Equal
         # infinities span a zero-length window — Inf - Inf is NaN, which
-        # would violate the documented duration >= 0.
-        return lo === hi ? 0.0 : max(0.0, Float64(hi) - Float64(lo))
+        # would violate the documented duration >= 0. `isequal` (not `===`)
+        # also matches equal infinities across types, like Inf32/Inf or two
+        # distinct BigFloat objects.
+        return isequal(lo, hi) ? 0.0 : max(0.0, Float64(hi) - Float64(lo))
     end
     # Subtract exactly so the endpoints stay distinct: Rational{BigInt}
     # losslessly represents every Integer, Rational and binary float, so the
-    # correctly rounded difference cannot collapse large integer, rational
-    # or close float bounds to one value, and never depends on the ambient
-    # BigFloat precision.
-    d =
-        if lo isa Union{Integer,Rational,Float16,Float32,Float64} &&
+    # difference cannot collapse large integer, rational or close float
+    # bounds to one value. The Float64 conversion also stays independent of
+    # the ambient BigFloat precision: integer spans convert a BigInt
+    # difference directly and exact non-integer spans go through
+    # _rational_to_float64.
+    d = if lo isa Integer && hi isa Integer
+        Float64(BigInt(hi) - BigInt(lo))
+    elseif lo isa Union{Integer,Rational,Float16,Float32,Float64} &&
            hi isa Union{Integer,Rational,Float16,Float32,Float64}
-            Float64(Rational{BigInt}(hi) - Rational{BigInt}(lo))
-        else
-            Float64(BigFloat(hi) - BigFloat(lo))
-        end
+        _rational_to_float64(Rational{BigInt}(hi) - Rational{BigInt}(lo))
+    else
+        Float64(BigFloat(hi) - BigFloat(lo))
+    end
     return max(0.0, d)
 end
 
