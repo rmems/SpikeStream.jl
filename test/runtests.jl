@@ -1626,6 +1626,193 @@ Base.BigFloat(t::CmpTick) = BigFloat(t.value)
         end
     end
 
+    @testset "synchrony metrics" begin
+        for name in (
+            :coincidence_count,
+            :coincidence_rate,
+            :pairwise_synchrony,
+            :population_synchrony,
+        )
+            @test Base.isexported(SpikeStream, name)
+            @test haskey(Base.Docs.meta(SpikeStream), Base.Docs.Binding(SpikeStream, name))
+        end
+
+        a = SpikeTrain(1, [0.10, 0.20, 0.30])
+
+        # identical trains: every spike coincides
+        identical = SpikeTrain(2, [0.10, 0.20, 0.30])
+        @test coincidence_count(a, identical) == 3
+        @test coincidence_rate(a, identical) == 1.0
+
+        # tolerance semantics: |t_a - t_b| <= tolerance, inclusive
+        near = SpikeTrain(2, [0.102, 0.202, 0.302])
+        @test coincidence_count(a, near; tolerance = 0.001) == 0
+        @test coincidence_count(a, near; tolerance = 0.005) == 3
+        @test coincidence_count(a, near; tolerance = 0.0) == 0
+        @test coincidence_count(a, identical; tolerance = 0.0) == 3
+        # inclusive boundary at exactly-representable offsets
+        @test coincidence_count([0.5], [0.625]; tolerance = 0.125) == 1
+        @test coincidence_count([0.5], [0.625]; tolerance = 0.0625) == 0
+
+        # shifted trains: inside vs outside the tolerance window
+        shifted = SpikeTrain(2, [0.11, 0.21, 0.31])
+        @test coincidence_count(a, shifted; tolerance = 0.005) == 0
+        @test coincidence_rate(a, shifted; tolerance = 0.005) == 0.0
+        @test coincidence_count(a, shifted; tolerance = 0.011) == 3
+        @test coincidence_rate(a, shifted; tolerance = 0.011) == 1.0
+
+        # raw timestamp vectors are sorted and accepted like other APIs
+        @test coincidence_count([0.3, 0.1, 0.2], [0.1, 0.2, 0.3]) == 3
+        @test coincidence_rate([0.0], [0.004]; tolerance = 0.005) == 1.0
+        @test coincidence_count([0.1, 0.2], SpikeTrain(2, [0.2])) == 1
+
+        # each spike participates in at most one pair
+        @test coincidence_count([0.0, 0.001], [0.0005]; tolerance = 0.001) == 1
+        @test coincidence_count([0.0005], [0.0, 0.001]; tolerance = 0.001) == 1
+
+        # normalization: 2 * count / (n_a + n_b)
+        @test coincidence_rate([0.0, 0.5], [0.0]; tolerance = 0.001) ≈ 2 / 3
+        @test coincidence_rate([0.1, 0.1], [0.1]; tolerance = 0.0) ≈ 2 / 3
+        @test coincidence_count([0.1, 0.1], [0.1]; tolerance = 0.0) == 1
+        @test coincidence_count([0.1], [0.1, 0.1]; tolerance = 0.0) == 1
+
+        # empty and single-spike inputs are deterministic
+        @test coincidence_count(Float64[], Float64[]) == 0
+        @test coincidence_rate(Float64[], Float64[]) == 0.0
+        @test coincidence_rate(Float64[], [0.1]) == 0.0
+        @test coincidence_count(SpikeTrain(1, Float64[]), SpikeTrain(2, [0.1])) == 0
+
+        # non-Float64 times and ids
+        @test coincidence_count(SpikeTrain(1, Float32[0.1]), SpikeTrain(2, [0.1])) == 1
+        @test coincidence_count(
+            SpikeTrain(UInt32(3), [1, 2]),
+            SpikeTrain(Int8(-1), [1, 2]);
+            tolerance = 0,
+        ) == 2
+
+        # validation
+        for bad_tol in (-0.1, NaN, Inf, -Inf)
+            @test_throws ArgumentError coincidence_count(a, identical; tolerance = bad_tol)
+            @test_throws ArgumentError coincidence_rate(a, identical; tolerance = bad_tol)
+            @test_throws ArgumentError pairwise_synchrony(
+                [a, identical];
+                tolerance = bad_tol,
+            )
+            @test_throws ArgumentError population_synchrony(
+                [a, identical];
+                tolerance = bad_tol,
+            )
+        end
+        @test_throws ArgumentError coincidence_count([0.1, NaN], [0.1])
+        @test_throws ArgumentError pairwise_synchrony([a, identical]; t_start = NaN)
+        @test_throws ArgumentError population_synchrony([a, identical]; t_end = Inf)
+        # finite but unrepresentable times overflow Float64 -> rejected
+        @test_throws ArgumentError coincidence_count(
+            SpikeTrain(1, [big(10.0)^400]),
+            SpikeTrain(2, [0.1]),
+        )
+        @test_throws ArgumentError pairwise_synchrony([
+            SpikeTrain(1, [big(10.0)^400]),
+            SpikeTrain(2, [0.1]),
+        ])
+        @test_throws ArgumentError pairwise_synchrony([
+            SpikeEvent(big(10.0)^400, 1),
+            SpikeEvent(0.1, 2),
+        ])
+
+        # pairwise over sparse, non-contiguous, negative ids — sorted rows
+        trains = [
+            SpikeTrain(1003, [0.10, 0.30]),
+            SpikeTrain(-2, [0.10, 0.305]),
+            SpikeTrain(7, [0.55]),
+            SpikeTrain(20, Float64[]),
+        ]
+        rows = pairwise_synchrony(trains; tolerance = 0.01)
+        @test isconcretetype(eltype(rows))
+        @test length(rows) == 6
+        @test [(r.id_a, r.id_b) for r in rows] == [(-2, 7), (-2, 20), (-2, 1003), (7, 20), (7, 1003), (20, 1003)]
+        @test rows[3].coincidence_count == 2      # (-2, 1003): both spikes match
+        @test rows[3].coincidence_rate == 1.0
+        @test rows[1].coincidence_count == 0      # (-2, 7): nothing within 0.01
+        @test rows[2].coincidence_rate == 0.0     # (-2, 20): silent pair
+        @test all(r -> 0.0 <= r.coincidence_rate <= 1.0, rows)
+
+        # event lists are grouped by neuron_id; order does not matter. The
+        # empty train 20 emits no events, so an event list only observes the
+        # units that actually spike.
+        events = spike_events(trains)
+        event_rows = pairwise_synchrony(events; tolerance = 0.01)
+        @test [(r.id_a, r.id_b) for r in event_rows] == [(-2, 7), (-2, 1003), (7, 1003)]
+        @test event_rows == [r for r in rows if r.id_a != 20 && r.id_b != 20]
+        @test pairwise_synchrony(reverse(events); tolerance = 0.01) == event_rows
+        @test pairwise_synchrony(reverse(trains); tolerance = 0.01) == rows
+
+        # trains sharing a neuron_id merge into one unit
+        merged = pairwise_synchrony(
+            [SpikeTrain(1, [0.1]), SpikeTrain(1, [0.2]), SpikeTrain(2, [0.11, 0.21])];
+            tolerance = 0.02,
+        )
+        @test length(merged) == 1
+        @test merged[1].coincidence_count == 2
+        @test merged[1].coincidence_rate == 1.0
+
+        # t_start/t_end slice spikes inside the inclusive window
+        windowed =
+            pairwise_synchrony(trains; tolerance = 0.01, t_start = 0.09, t_end = 0.35)
+        @test length(windowed) == 6
+        @test windowed[3].coincidence_count == 2  # (-2, 1003) still fully matched
+        late_only = pairwise_synchrony(trains; tolerance = 0.01, t_start = 0.4, t_end = 1.0)
+        @test all(r -> r.coincidence_count == 0, late_only)
+        @test all(r -> r.coincidence_rate == 0.0, late_only)
+        edge = [SpikeTrain(1, [0.5]), SpikeTrain(2, [0.5])]
+        @test pairwise_synchrony(edge; t_start = 0.5, t_end = 0.5)[1].coincidence_count == 1
+        @test pairwise_synchrony(edge; t_start = 0.6)[1].coincidence_count == 0
+
+        # population aggregate: mean pairwise coincidence rate
+        pop = [
+            SpikeTrain(1, [0.1, 0.2, 0.3]),
+            SpikeTrain(2, [0.1, 0.2, 0.3]),
+            SpikeTrain(3, [0.9]),
+        ]
+        @test population_synchrony(pop; tolerance = 0.005) ≈ (1.0 + 0.0 + 0.0) / 3
+        pop_rows = pairwise_synchrony(pop; tolerance = 0.005)
+        @test population_synchrony(pop; tolerance = 0.005) ≈
+              sum(r.coincidence_rate for r in pop_rows) / length(pop_rows)
+        all_sync = [SpikeTrain(i, [0.1, 0.2]) for i in (1, 5, 9)]
+        @test population_synchrony(all_sync; tolerance = 0.0) == 1.0
+        @test population_synchrony(all_sync) == population_synchrony(spike_events(all_sync))
+        silent = [SpikeTrain(1, Float64[]), SpikeTrain(2, Float64[])]
+        @test population_synchrony(silent) == 0.0
+
+        # fewer than two observed units: no pairs, NaN
+        @test isnan(population_synchrony(SpikeTrain[]))
+        @test isnan(population_synchrony(SpikeEvent[]))
+        @test isnan(population_synchrony(SpikeTrain{Float64,Int}[]))
+        @test isnan(population_synchrony(SpikeTrain(1, [0.1])))
+        @test isempty(pairwise_synchrony(SpikeTrain[]))
+        @test isempty(pairwise_synchrony(SpikeEvent[]))
+        @test isempty(pairwise_synchrony(SpikeTrain(1, [0.1])))
+        @test isconcretetype(eltype(pairwise_synchrony(SpikeTrain[])))
+
+        # moderate multi-neuron fixture: bounded per-pair sweep, sane ranges
+        rng = MersenneTwister(2024)
+        many = [SpikeTrain(id, sort!(rand(rng, 400) .* 5.0)) for id = 1:48]
+        many_rows = pairwise_synchrony(many; tolerance = 0.01)
+        @test length(many_rows) == 48 * 47 ÷ 2
+        @test all(r -> 0.0 <= r.coincidence_rate <= 1.0, many_rows)
+        @test all(r -> r.coincidence_count >= 0, many_rows)
+        many_pop = population_synchrony(many; tolerance = 0.01)
+        @test 0.0 <= many_pop <= 1.0
+        @test many_pop ≈ sum(r.coincidence_rate for r in many_rows) / length(many_rows)
+        # windowed call on the same fixture: removing spikes can only shrink a matching
+        many_win = pairwise_synchrony(many; tolerance = 0.01, t_start = 2.0, t_end = 3.0)
+        @test length(many_win) == length(many_rows)
+        @test all(
+            k -> many_win[k].coincidence_count <= many_rows[k].coincidence_count,
+            eachindex(many_rows),
+        )
+    end
+
     @testset "frozen spike fixtures (LIM-41)" begin
         fixture_path = joinpath(@__DIR__, "fixtures", "spike_vectors.json")
         @test isfile(fixture_path)

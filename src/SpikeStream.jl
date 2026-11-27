@@ -25,6 +25,12 @@ Event types:
 - `spike_events` / `spike_trains` — convert between trains and events
 - `spike_times` / `neuron_id` — accessors; `spike_times(train)` feeds the vector APIs above
 
+Synchrony metrics (`tolerance` = max `|Δt|` between coincident spikes):
+- `coincidence_count` — matched coincidence pairs between two trains/vectors
+- `coincidence_rate` — fraction of spikes in a coincidence pair, in `[0, 1]`
+- `pairwise_synchrony` — per-unit-pair coincidence summary, sorted by unit id
+- `population_synchrony` — mean pairwise coincidence rate (`NaN` for `< 2` units)
+
 """
 module SpikeStream
 
@@ -32,6 +38,7 @@ using Statistics
 
 include("spike_features.jl")
 include("spike_events.jl")
+include("spike_synchrony.jl")
 include("spike_stream.jl")
 include("population_features.jl")
 
@@ -41,5 +48,6 @@ export SpikeFeatureSnapshot, spike_features, SpikeFeatureNormalizer, transform
 export SpikeEvent, SpikeTrain, spike_times, neuron_id, spike_events, spike_trains
 export SpikeFeatureStream, snapshot
 export PopulationFeatureSnapshot, population_spike_features, unit_firing_rates
+export coincidence_count, coincidence_rate, pairwise_synchrony, population_synchrony
 
 end # module
