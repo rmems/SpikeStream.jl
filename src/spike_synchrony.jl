@@ -143,9 +143,10 @@ is no `Float64` rounding — so huge integer or high-precision timestamps that
 look equal in `Float64` still count correctly.
 
 Matching is one-to-one: every spike belongs to at most one coincidence pair,
-and the count is the maximum number of disjoint pairs. Each input is sorted
-once (`O(n log n)`), then matched greedily in a single two-pointer sweep,
-`O(n_a + n_b)` — not an all-pairs nested scan.
+and the count is the maximum number of disjoint pairs. Raw timestamp vectors
+are sorted once (`O(n log n)`); `SpikeTrain` times are already sorted by
+construction, so train calls skip that step. The match itself is a greedy
+two-pointer sweep, `O(n_a + n_b)` — not an all-pairs nested scan.
 
 ```julia
 julia> coincidence_count(SpikeTrain(1, [0.10, 0.20]), SpikeTrain(2, [0.105]))
