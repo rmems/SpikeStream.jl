@@ -27,6 +27,8 @@ SpikeStream.jl is focused on feature extraction from spike-event streams.
 - `normalized_feature_vector(spike_times)` → compatibility helper (snapshot + default normalizer)
 - `population_spike_features(population; t_start, t_end, n_total_units)` → [`PopulationFeatureSnapshot`](#population-features)
 - `unit_firing_rates(population; t_start, t_end)` → per-unit rates over the window
+- `coincidence_count(a, b; tolerance)` / `coincidence_rate(a, b; tolerance)`
+- `pairwise_synchrony(population; tolerance)` / `population_synchrony(population; tolerance)`
 
 ## Feature extraction vs normalization
 
@@ -57,6 +59,32 @@ Allocation: `SpikeTrain(id, times)` copies `times` once (and sorts the copy). `S
 
 The existing functions still take plain `AbstractVector{<:Real}` timestamps; the types are optional.
 
+## Synchrony metrics
+
+Lightweight coincidence/synchrony metrics over `SpikeTrain` collections or
+`SpikeEvent` lists (#32). Two spikes **coincide** when `|t_a - t_b| <= tolerance`
+(inclusive; `tolerance` defaults to `0.005` in the input's time units and must be
+`>= 0`). Matching is one-to-one: each spike belongs to at most one coincidence
+pair, and the count is the maximum such matching — computed with a linear
+two-pointer sweep (`O(n_a + n_b)` per pair), not an all-pairs scan.
+
+- `coincidence_count(a, b; tolerance)` → number of matched coincidence pairs (`>= 0`)
+- `coincidence_rate(a, b; tolerance)` → `2*count/(n_a + n_b)` in `[0, 1]` — the fraction of spikes taking part in a coincidence; `0` when either side is empty
+- `pairwise_synchrony(population; tolerance, t_start, t_end)` → one `(id_a, id_b, coincidence_count, coincidence_rate)` row per unordered unit pair, sorted by unit id. `population` is a vector of `SpikeTrain`s (same-id trains merge) or `SpikeEvent`s (grouped by id); sparse/non-contiguous ids are fine, silent units report `0`s
+- `population_synchrony(population; tolerance, t_start, t_end)` → mean pairwise `coincidence_rate` in `[0, 1]`; `NaN` when fewer than 2 units are observed
+
+Optional `t_start`/`t_end` restrict the comparison to spikes inside the inclusive
+window `[t_start, t_end]` (same bounds as `spike_count`). That is also the
+streaming path until a dedicated synchrony stream exists: group events per
+window and call the batch functions on each slice.
+
+```julia
+trains = [SpikeTrain(1, [0.10, 0.20]), SpikeTrain(7, [0.11, 0.60]), SpikeTrain(-3, Float64[])]
+rows = pairwise_synchrony(trains; tolerance = 0.02)
+# pairs: (-3,1) -> 0, (-3,7) -> 0, (1,7) -> count 1, rate 0.5
+population_synchrony(trains; tolerance = 0.02)  # ≈ 0.167, mean over the 3 pairs
+```
+
 ## Output Ranges
 
 - `spike_count` → integer `>= 0`
@@ -73,6 +101,10 @@ The existing functions still take plain `AbstractVector{<:Real}` timestamps; the
 - `transform` / `normalized_feature_vector` → length-4 vector; with default `clip=true`, each component is in `[0, 1]`
 - `PopulationFeatureSnapshot` — unit counts and `total_spike_count` are integers `>= 0`; `population_rate`, `mean_unit_rate`, `count_mean`, `count_variance` are `>= 0`; `active_fraction` is in `[0, 1]`; `fano_factor` is `>= 0` or `NaN` when `count_mean == 0`
 - `unit_firing_rates` → vector of `(neuron_id, spike_count, firing_rate)` rows sorted by id; `firing_rate >= 0`
+- `coincidence_count` → integer `>= 0`
+- `coincidence_rate` → real in `[0, 1]` (`0` when either input is empty)
+- `pairwise_synchrony` → vector of `(id_a, id_b, coincidence_count >= 0, coincidence_rate in [0, 1])` rows sorted by unit id
+- `population_synchrony` → real in `[0, 1]`, or `NaN` for `< 2` observed units
 
 ## Package Boundary
 
@@ -80,7 +112,7 @@ SpikeStream.jl owns spike-stream **feature extraction** only. Kinetic / signal-d
 
 | Area | Owner | Notes |
 | --- | --- | --- |
-| `spike_count`, `spike_density`, `isi_stats`, `detect_bursts`, `windowed_spike_features`, `spike_features`, `SpikeFeatureNormalizer` / `transform`, `normalized_feature_vector`, `SpikeFeatureStream` / `snapshot`, `population_spike_features` / `PopulationFeatureSnapshot`, `unit_firing_rates` | **SpikeStream.jl** | Public API of this package |
+| `spike_count`, `spike_density`, `isi_stats`, `detect_bursts`, `windowed_spike_features`, `spike_features`, `SpikeFeatureNormalizer` / `transform`, `normalized_feature_vector`, `SpikeFeatureStream` / `snapshot`, `population_spike_features` / `PopulationFeatureSnapshot`, `unit_firing_rates`, `coincidence_count`, `coincidence_rate`, `pairwise_synchrony`, `population_synchrony` | **SpikeStream.jl** | Public API of this package |
 | Hurst exponent | [kinetic-signals](https://github.com/rmems/kinetic-signals) | Formerly transitional `compute_hurst` (removed) |
 | Hawkes intensity | [kinetic-signals](https://github.com/rmems/kinetic-signals) | Formerly transitional `compute_hawkes` (removed) |
 | Surprise / geometric Brownian motion (GBM) | [kinetic-signals](https://github.com/rmems/kinetic-signals) | Formerly transitional `compute_gbm_surprise` (removed) |

@@ -79,6 +79,28 @@ stream_group["batch_recompute_perunit"] = @benchmarkable begin
 end
 SUITE["stream"] = stream_group
 
+# Synchrony (GH#32): moderate multi-neuron fixture — 48 units x 400 spikes.
+# pairwise_synchrony compares all 1128 unordered unit pairs, each in a single
+# linear two-pointer sweep over its sorted in-window times.
+synchrony_trains = [SpikeTrain(id, generate_spike_train(400, 10.0)) for id = 1:48]
+sync_group = BenchmarkGroup()
+sync_group["coincidence_count"] = @benchmarkable coincidence_count(
+    $(synchrony_trains[1]),
+    $(synchrony_trains[2]);
+    tolerance = 0.01,
+)
+sync_group["pairwise_synchrony"] =
+    @benchmarkable pairwise_synchrony($synchrony_trains; tolerance = 0.01)
+sync_group["pairwise_synchrony_window"] = @benchmarkable pairwise_synchrony(
+    $synchrony_trains;
+    tolerance = 0.01,
+    t_start = 4.0,
+    t_end = 6.0,
+)
+sync_group["population_synchrony"] =
+    @benchmarkable population_synchrony($synchrony_trains; tolerance = 0.01)
+SUITE["synchrony"] = sync_group
+
 results = run(SUITE, verbose = true, seconds = 5)
 
 println()
@@ -101,17 +123,22 @@ for (label, n, _) in SCALES
     end
 end
 
-group = results["stream"]
-println()
-println("  stream (5_000 events, 16 units; incremental vs batch)")
-println("  " * "-" ^ 60)
-for name in sort(collect(keys(group)))
-    trial = group[name]
-    m = median(trial)
-    time_str = BenchmarkTools.prettytime(time(m))
-    alloc_str = allocs(m)
-    mem_str = BenchmarkTools.prettymemory(memory(m))
-    println("  $(rpad(name, 32)) $time_str  ($alloc_str allocs, $mem_str)")
+for (label, desc) in (
+    "stream" => "stream (5_000 events, 16 units; incremental vs batch)",
+    "synchrony" => "synchrony (48 units x 400 spikes; 1_128 pairs)",
+)
+    group = results[label]
+    println()
+    println("  $desc")
+    println("  " * "-" ^ 60)
+    for name in sort(collect(keys(group)))
+        trial = group[name]
+        m = median(trial)
+        time_str = BenchmarkTools.prettytime(time(m))
+        alloc_str = allocs(m)
+        mem_str = BenchmarkTools.prettymemory(memory(m))
+        println("  $(rpad(name, 32)) $time_str  ($alloc_str allocs, $mem_str)")
+    end
 end
 
 println()
