@@ -25,6 +25,8 @@ SpikeStream.jl is focused on feature extraction from spike-event streams.
 - `spike_features(spike_times)` → raw [`SpikeFeatureSnapshot`](#feature-extraction-vs-normalization)
 - `SpikeFeatureNormalizer` + `transform(normalizer, snapshot)` → explicit scaling
 - `normalized_feature_vector(spike_times)` → compatibility helper (snapshot + default normalizer)
+- `population_spike_features(population; t_start, t_end, n_total_units)` → [`PopulationFeatureSnapshot`](#population-features)
+- `unit_firing_rates(population; t_start, t_end)` → per-unit rates over the window
 
 ## Feature extraction vs normalization
 
@@ -69,6 +71,8 @@ The existing functions still take plain `AbstractVector{<:Real}` timestamps; the
   - `burst_count >= 0`
 - `SpikeFeatureSnapshot` fields match the corresponding raw feature ranges above
 - `transform` / `normalized_feature_vector` → length-4 vector; with default `clip=true`, each component is in `[0, 1]`
+- `PopulationFeatureSnapshot` — unit counts and `total_spike_count` are integers `>= 0`; `population_rate`, `mean_unit_rate`, `count_mean`, `count_variance` are `>= 0`; `active_fraction` is in `[0, 1]`; `fano_factor` is `>= 0` or `NaN` when `count_mean == 0`
+- `unit_firing_rates` → vector of `(neuron_id, spike_count, firing_rate)` rows sorted by id; `firing_rate >= 0`
 
 ## Package Boundary
 
@@ -76,7 +80,7 @@ SpikeStream.jl owns spike-stream **feature extraction** only. Kinetic / signal-d
 
 | Area | Owner | Notes |
 | --- | --- | --- |
-| `spike_count`, `spike_density`, `isi_stats`, `detect_bursts`, `windowed_spike_features`, `spike_features`, `SpikeFeatureNormalizer` / `transform`, `normalized_feature_vector`, `SpikeFeatureStream` / `snapshot` | **SpikeStream.jl** | Public API of this package |
+| `spike_count`, `spike_density`, `isi_stats`, `detect_bursts`, `windowed_spike_features`, `spike_features`, `SpikeFeatureNormalizer` / `transform`, `normalized_feature_vector`, `SpikeFeatureStream` / `snapshot`, `population_spike_features` / `PopulationFeatureSnapshot`, `unit_firing_rates` | **SpikeStream.jl** | Public API of this package |
 | Hurst exponent | [kinetic-signals](https://github.com/rmems/kinetic-signals) | Formerly transitional `compute_hurst` (removed) |
 | Hawkes intensity | [kinetic-signals](https://github.com/rmems/kinetic-signals) | Formerly transitional `compute_hawkes` (removed) |
 | Surprise / geometric Brownian motion (GBM) | [kinetic-signals](https://github.com/rmems/kinetic-signals) | Formerly transitional `compute_gbm_surprise` (removed) |
@@ -156,6 +160,38 @@ snap = snapshot(stream)   # active window containing the newest accepted event
 - `push!` also accepts a `SpikeTrain` (bulk ingest, returns accepted count).
   Per-unit buffers are evicted behind the active window, so memory stays
   bounded by active units and in-window spike counts.
+
+## Population features
+
+`population_spike_features` summarizes activity across a whole unit population
+into a `PopulationFeatureSnapshot`. The `population` argument may be a vector
+of `SpikeTrain`s, a flat vector of `SpikeEvent`s, a single `SpikeTrain`, or a
+`SpikeFeatureStream` (which aggregates its current `snapshot` and returns
+`nothing` before the first accepted event).
+
+```julia
+pop = [SpikeTrain(1, [0.1, 0.2, 0.3]), SpikeTrain(7, [0.15]), SpikeTrain(1003, Float64[])]
+snap = population_spike_features(pop; t_start=0.0, t_end=1.0)
+snap.population_rate    # total spikes / window duration -> 4.0
+snap.active_fraction   # n_active_units / n_total_units -> 2/3 (sparsity = 1 - this)
+snap.count_mean        # mean per-unit spike count -> 4/3
+snap.count_variance    # uncorrected variance over n_total_units slots
+snap.fano_factor       # count_variance / count_mean (NaN when count_mean == 0)
+
+rates = unit_firing_rates(pop; t_start=0.0, t_end=1.0)
+# (neuron_id, spike_count, firing_rate) rows sorted by id
+```
+
+Denominator semantics are explicit: `n_observed_units` counts distinct ids in
+the input (an empty `SpikeTrain` is observed but silent; a `SpikeEvent` list
+only observes ids that appear), `n_active_units` counts observed units with at
+least one in-window spike, and `n_total_units` is the denominator used for
+`mean_unit_rate`, `active_fraction`, `count_mean` and `count_variance` — it
+defaults to `n_observed_units` and may be passed larger to account for
+declared-but-absent units. Neuron ids are opaque: sparse, negative, or
+non-contiguous ids need no dense range. Non-positive window durations report
+counts with all rate fields `0`; `fano_factor` is `NaN` when `count_mean == 0`
+(no meaningful Fano factor for a spikeless window or empty population).
 
 ## Installation
 

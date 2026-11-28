@@ -13,6 +13,21 @@ end
 Base.Float64(x::ConversionProbe) = (CONVERSION_COUNT[] += 1; x.value)
 Base.isfinite(x::ConversionProbe) = isfinite(x.value)
 
+const TICK_BOUND_CMPS = Ref(0)
+
+# A finite Real timestamp with exact comparisons and a lossless BigFloat
+# image but no Float64 conversion: omitted or exact window bounds must never
+# reach for Float64, and bound<->tick isless calls are counted so a binary
+# search is distinguishable from a full scan.
+struct CmpTick <: Real
+    value::Int
+end
+Base.isfinite(::CmpTick) = true
+Base.isless(a::CmpTick, b::CmpTick) = isless(a.value, b.value)
+Base.isless(a::Integer, b::CmpTick) = (TICK_BOUND_CMPS[] += 1; isless(a, b.value))
+Base.isless(a::CmpTick, b::Integer) = (TICK_BOUND_CMPS[] += 1; isless(a.value, b))
+Base.BigFloat(t::CmpTick) = BigFloat(t.value)
+
 @testset "SpikeStream" begin
 
     @testset "Package loads" begin
@@ -37,6 +52,9 @@ Base.isfinite(x::ConversionProbe) = isfinite(x.value)
             :spike_trains,
             :SpikeFeatureStream,
             :snapshot,
+            :PopulationFeatureSnapshot,
+            :population_spike_features,
+            :unit_firing_rates,
         )
             @test Base.isexported(SpikeStream, name)
             @test haskey(Base.Docs.meta(SpikeStream), Base.Docs.Binding(SpikeStream, name))
@@ -970,6 +988,641 @@ Base.isfinite(x::ConversionProbe) = isfinite(x.value)
             snap = snapshot(s)
             @test [row.neuron_id for row in snap.neurons] == Int32[3, 7]
             @test snap.neurons[2].features.count == 1
+        end
+    end
+
+    @testset "population features" begin
+        pop = [
+            SpikeTrain(1, [0.1, 0.2, 0.3]),
+            SpikeTrain(7, [0.15]),
+            SpikeTrain(1003, Float64[]),
+        ]
+
+        @testset "batch snapshot over SpikeTrain vectors" begin
+            snap = population_spike_features(pop; t_start = 0.0, t_end = 1.0)
+            @test snap isa PopulationFeatureSnapshot
+            @test snap.duration == 1.0
+            @test snap.n_total_units == 3
+            @test snap.n_observed_units == 3
+            @test snap.n_active_units == 2
+            @test snap.total_spike_count == 4
+            @test snap.population_rate == 4.0
+            @test snap.mean_unit_rate ≈ 4 / 3
+            @test snap.active_fraction ≈ 2 / 3
+            @test snap.count_mean ≈ 4 / 3
+            @test snap.count_variance ≈ (25 + 1 + 16) / 27
+            @test snap.fano_factor ≈ snap.count_variance / snap.count_mean
+
+            # repeated calls are pure: same input, same snapshot, no mutation
+            @test population_spike_features(pop; t_start = 0.0, t_end = 1.0) == snap
+            @test spike_times(pop[1]) == [0.1, 0.2, 0.3]
+
+            # inferred duration spans first/last spike of the whole population
+            inferred = population_spike_features(pop)
+            @test inferred.duration ≈ 0.2
+            @test inferred.population_rate ≈ 4 / 0.2
+
+            # a single SpikeTrain is a one-unit population
+            solo = population_spike_features(SpikeTrain(4, [0.1, 0.9]))
+            @test solo.n_total_units == 1
+            @test solo.n_active_units == 1
+            @test solo.population_rate ≈ 2 / 0.8
+            @test solo.count_variance == 0.0
+            @test solo.fano_factor == 0.0
+        end
+
+        @testset "batch snapshot over SpikeEvent vectors" begin
+            events = [
+                SpikeEvent(0.05, 1),
+                SpikeEvent(0.5, 1),
+                SpikeEvent(0.9, 1),
+                SpikeEvent(0.5, 2),
+                SpikeEvent(0.9, 3),
+            ]
+            snap = population_spike_features(events; t_start = 0.4, t_end = 0.6)
+            @test snap.duration ≈ 0.2
+            # events outside the window still mark their unit as observed
+            @test snap.n_observed_units == 3
+            @test snap.n_active_units == 2
+            @test snap.total_spike_count == 2
+            @test snap.population_rate ≈ 10.0
+            @test snap.active_fraction ≈ 2 / 3
+
+            # expanding trains to events drops declared-silent units: the empty
+            # train above is unobserved, so the denominator shrinks accordingly
+            ev_pop = spike_events(pop)
+            ev_snap = population_spike_features(ev_pop; t_start = 0.0, t_end = 1.0)
+            @test ev_snap.n_observed_units == 2
+            @test ev_snap.n_active_units == 2
+            @test ev_snap.mean_unit_rate == 2.0
+            @test ev_snap.active_fraction == 1.0
+            @test ev_snap.count_mean == 2.0
+            @test ev_snap.count_variance == 1.0
+            @test ev_snap.fano_factor == 0.5
+        end
+
+        @testset "n_total_units denominator semantics" begin
+            snap = population_spike_features(
+                pop;
+                t_start = 0.0,
+                t_end = 1.0,
+                n_total_units = 5,
+            )
+            @test snap.n_total_units == 5
+            @test snap.n_observed_units == 3
+            @test snap.mean_unit_rate ≈ 4 / 5
+            @test snap.active_fraction ≈ 2 / 5
+            @test snap.count_mean ≈ 4 / 5
+            # absent declared units contribute (0 - mean)^2 each
+            @test snap.count_variance ≈ (4.84 + 0.04 + 0.64 + 2 * 0.64) / 5
+            @test snap.fano_factor ≈ snap.count_variance / snap.count_mean
+
+            @test_throws ArgumentError population_spike_features(pop; n_total_units = 2)
+            @test_throws ArgumentError population_spike_features(pop; n_total_units = -1)
+
+            # declared-but-absent units on an empty population stay zeros
+            ghost = population_spike_features(
+                SpikeTrain{Float64,Int}[];
+                t_start = 0.0,
+                t_end = 1.0,
+                n_total_units = 4,
+            )
+            @test ghost.n_total_units == 4
+            @test ghost.n_observed_units == 0
+            @test ghost.count_mean == 0.0
+            @test isnan(ghost.fano_factor)
+        end
+
+        @testset "empty, silent, and single-unit populations" begin
+            for empty_pop in (SpikeTrain{Float64,Int}[], SpikeEvent{Float64,Int}[])
+                snap = population_spike_features(empty_pop; t_start = 0.0, t_end = 1.0)
+                @test snap.duration == 1.0
+                @test snap.n_total_units == 0
+                @test snap.n_observed_units == 0
+                @test snap.n_active_units == 0
+                @test snap.total_spike_count == 0
+                @test snap.population_rate == 0.0
+                @test snap.active_fraction == 0.0
+                @test snap.count_mean == 0.0
+                @test snap.count_variance == 0.0
+                @test isnan(snap.fano_factor)
+                @test isempty(unit_firing_rates(empty_pop))
+            end
+
+            # no edges at all: inferred duration is 0 and rates stay 0
+            bare = population_spike_features(SpikeTrain[])
+            @test bare.duration == 0.0
+            @test isnan(bare.fano_factor)
+
+            # silent population: all observed units carry zero in-window spikes
+            silent = population_spike_features(pop; t_start = 2.0, t_end = 3.0)
+            @test silent.duration == 1.0
+            @test silent.n_observed_units == 3
+            @test silent.n_active_units == 0
+            @test silent.population_rate == 0.0
+            @test silent.count_mean == 0.0
+            @test isnan(silent.fano_factor)
+
+            # inverted window: duration clamps to 0, nothing is counted
+            inverted = population_spike_features(pop; t_start = 1.0, t_end = 0.0)
+            @test inverted.duration == 0.0
+            @test inverted.total_spike_count == 0
+            @test inverted.population_rate == 0.0
+            @test isnan(inverted.fano_factor)
+
+            # zero-length window on a spike instant: counts are reported while
+            # rate fields stay 0 and count statistics remain meaningful
+            instant = population_spike_features(pop; t_start = 0.2, t_end = 0.2)
+            @test instant.duration == 0.0
+            @test instant.total_spike_count == 1
+            @test instant.n_active_units == 1
+            @test instant.population_rate == 0.0
+            @test instant.mean_unit_rate == 0.0
+            @test instant.count_mean ≈ 1 / 3
+            @test instant.count_variance ≈ 2 / 9
+            @test instant.fano_factor ≈ 2 / 3
+        end
+
+        @testset "heterogeneous and homogeneous rates" begin
+            het = [
+                SpikeTrain(1, [0.1, 0.2, 0.3, 0.4, 0.5]),
+                SpikeTrain(2, [0.1]),
+                SpikeTrain(3, Float64[]),
+            ]
+            snap = population_spike_features(het; t_start = 0.0, t_end = 2.0)
+            @test snap.count_mean ≈ 2.0
+            @test snap.count_variance ≈ (9 + 1 + 4) / 3
+            @test snap.fano_factor ≈ snap.count_variance / 2
+
+            # identical per-unit counts: zero count variance, Fano factor 0
+            hom = [SpikeTrain(id, [0.1, 0.2, 0.3]) for id = 1:3]
+            hom_snap = population_spike_features(hom; t_start = 0.0, t_end = 1.0)
+            @test hom_snap.count_variance == 0.0
+            @test hom_snap.fano_factor == 0.0
+        end
+
+        @testset "sparse and non-contiguous unit ids" begin
+            sparse_pop = [
+                SpikeTrain(-3, [0.1]),
+                SpikeTrain(0, Float64[]),
+                SpikeTrain(Int16(7), [0.2, 0.4]),
+                SpikeTrain(10^6, [0.3]),
+            ]
+            snap = population_spike_features(sparse_pop; t_start = 0.0, t_end = 1.0)
+            @test snap.n_observed_units == 4
+            @test snap.n_active_units == 3
+
+            rates = unit_firing_rates(sparse_pop; t_start = 0.0, t_end = 1.0)
+            @test [r.neuron_id for r in rates] == [-3, 0, 7, 10^6]
+            @test rates[1].neuron_id isa Int
+            @test rates[3].neuron_id isa Int16
+            @test rates[2].spike_count == 0
+            @test rates[2].firing_rate == 0.0
+            @test rates[3].firing_rate == 2.0
+
+            # out-of-window spikes still produce a zero-rate row
+            late = unit_firing_rates(sparse_pop; t_start = 0.0, t_end = 0.05)
+            @test length(late) == 4
+            @test all(r -> r.spike_count == 0 && r.firing_rate == 0.0, late)
+        end
+
+        @testset "per-unit firing rates" begin
+            rates = unit_firing_rates(pop; t_start = 0.0, t_end = 1.0)
+            @test length(rates) == 3
+            @test [r.neuron_id for r in rates] == [1, 7, 1003]
+            @test [r.spike_count for r in rates] == [3, 1, 0]
+            @test [r.firing_rate for r in rates] == [3.0, 1.0, 0.0]
+
+            solo = unit_firing_rates(SpikeTrain(9, [0.1, 0.9]))
+            @test length(solo) == 1
+            @test solo[1].neuron_id == 9
+            @test solo[1].firing_rate ≈ 2 / 0.8
+
+            # sum of per-unit rates is the population rate
+            snap = population_spike_features(pop; t_start = 0.0, t_end = 1.0)
+            @test sum(r.firing_rate for r in rates) == snap.population_rate
+        end
+
+        @testset "inferred duration needs two spikes" begin
+            # one spike + one explicit bound: inferred edge is undefined, so
+            # duration (and therefore every rate) is 0 — same rule as
+            # spike_density — while the count is still reported
+            for singleton in ([SpikeTrain(1, [0.999])], [SpikeEvent(0.999, 1)])
+                snap = population_spike_features(singleton; t_end = 1.0)
+                @test snap.duration == 0.0
+                @test snap.total_spike_count == 1
+                @test snap.population_rate == 0.0
+                rates = unit_firing_rates(singleton; t_end = 1.0)
+                @test rates[1].spike_count == 1
+                @test rates[1].firing_rate == 0.0
+            end
+            for singleton in ([SpikeTrain(1, [0.5])], [SpikeEvent(0.5, 1)])
+                snap = population_spike_features(singleton; t_start = 0.0)
+                @test snap.duration == 0.0
+                @test snap.total_spike_count == 1
+                @test snap.population_rate == 0.0
+                @test unit_firing_rates(singleton; t_start = 0.0)[1].firing_rate == 0.0
+            end
+
+            # both bounds explicit: a single spike keeps a positive duration
+            snap = population_spike_features(
+                [SpikeTrain(1, [0.5])];
+                t_start = 0.0,
+                t_end = 1.0,
+            )
+            @test snap.duration == 1.0
+            @test snap.population_rate == 1.0
+            @test unit_firing_rates([SpikeEvent(0.5, 1)]; t_start = 0.0, t_end = 1.0)[1].firing_rate ==
+                  1.0
+
+            # two or more spikes still infer a positive span
+            two = population_spike_features(
+                [SpikeTrain(1, [0.5]), SpikeTrain(2, [0.9])];
+                t_start = 0.0,
+            )
+            @test two.duration ≈ 0.9
+            @test two.population_rate ≈ 2 / 0.9
+        end
+
+        @testset "large integer timestamps keep their precision" begin
+            # Float64 spacing around b is 256: distinct integer endpoints and
+            # spike times collapse to one value when converted first
+            b = 1_700_000_000_000_000_000
+            @test Float64(b) == Float64(b + 100)
+
+            for p in ([SpikeTrain(1, [b + 50])], [SpikeEvent(b + 50, 1)])
+                snap = population_spike_features(p; t_start = b, t_end = b + 100)
+                @test snap.duration == 100.0
+                @test snap.total_spike_count == 1
+                @test snap.population_rate ≈ 0.01
+                rates = unit_firing_rates(p; t_start = b, t_end = b + 100)
+                @test rates[1].spike_count == 1
+                @test rates[1].firing_rate ≈ 0.01
+            end
+
+            # an event just outside the window must stay uncounted
+            for p in ([SpikeTrain(1, [b + 150])], [SpikeEvent(b + 150, 1)])
+                snap = population_spike_features(p; t_start = b, t_end = b + 100)
+                @test snap.total_spike_count == 0
+                @test snap.n_active_units == 0
+                @test snap.population_rate == 0.0
+            end
+
+            # inferred edges keep integer precision too
+            snap = population_spike_features([
+                SpikeTrain(1, [b + 50]),
+                SpikeTrain(2, [b + 60]),
+            ])
+            @test snap.duration == 10.0
+            @test snap.population_rate ≈ 0.2
+        end
+
+        @testset "signed-zero bounds are representation-independent" begin
+            neg_train = SpikeTrain(7, [-0.0])
+            pos_train = SpikeTrain(7, [0.0])
+            for (tr, t_start, t_end) in (
+                (neg_train, 0.0, 1.0),
+                (pos_train, -1.0, -0.0),
+                (neg_train, -0.0, -0.0),
+                (pos_train, -0.0, -0.0),
+                (neg_train, -0.0, 1.0),
+            )
+                by_train = population_spike_features([tr]; t_start = t_start, t_end = t_end)
+                by_event = population_spike_features(
+                    spike_events(tr);
+                    t_start = t_start,
+                    t_end = t_end,
+                )
+                @test by_train.total_spike_count == by_event.total_spike_count
+                @test by_train.population_rate == by_event.population_rate
+            end
+
+            # isless orders -0.0 before 0.0, so a -0.0 spike sits below a 0.0
+            # lower bound while a 0.0 spike sits above a -0.0 upper bound
+            @test population_spike_features([neg_train]; t_start = 0.0, t_end = 1.0).total_spike_count ==
+                  0
+            @test population_spike_features(
+                spike_events(neg_train);
+                t_start = 0.0,
+                t_end = 1.0,
+            ).total_spike_count == 0
+            @test population_spike_features([pos_train]; t_start = -1.0, t_end = -0.0).total_spike_count ==
+                  0
+            @test population_spike_features(
+                spike_events(neg_train);
+                t_start = -0.0,
+                t_end = -0.0,
+            ).total_spike_count == 1
+        end
+
+        @testset "mixed timestamp types keep original extrema" begin
+            # `min`/`max` promote a signed and unsigned time to UInt and
+            # throw; `isless` keeps each original timestamp
+            mixed_sign = SpikeEvent[SpikeEvent(-1, 1), SpikeEvent(UInt(1), 2)]
+            snap = population_spike_features(mixed_sign; t_start = -2, t_end = 2)
+            @test snap.total_spike_count == 2
+            @test snap.duration == 4.0
+            @test snap.population_rate == 0.5
+            inferred = population_spike_features(mixed_sign)
+            @test inferred.duration == 2.0
+            @test inferred.population_rate == 1.0
+
+            # Float32(2^24) promotes Int times back down to Float32, which
+            # would erase the one-unit span; extrema keep the raw values
+            float_int =
+                SpikeEvent[SpikeEvent(Float32(16_777_216), 1), SpikeEvent(16_777_217, 2)]
+            snap = population_spike_features(float_int)
+            @test snap.duration == 1.0
+            @test snap.total_spike_count == 2
+            @test snap.population_rate == 2.0
+
+            # same invariants through the SpikeTrain path
+            sign_trains = SpikeTrain[SpikeTrain(1, Int[-1]), SpikeTrain(2, UInt64[0x1])]
+            @test population_spike_features(sign_trains; t_start = -2, t_end = 2).total_spike_count ==
+                  2
+            @test population_spike_features(sign_trains).duration == 2.0
+            f32_trains =
+                SpikeTrain[SpikeTrain(1, Float32[16_777_216]), SpikeTrain(2, [16_777_217])]
+            @test population_spike_features(f32_trains).duration == 1.0
+        end
+
+        @testset "float bounds share the spike_count window domain" begin
+            train = SpikeTrain(1, [1 // 3])
+            # `spike_count` converts both sides to Float64, so the rational
+            # spike lands exactly on the Float64 upper bound
+            @test spike_count(spike_times(train); t_start = 0.0, t_end = 1 / 3) == 1
+            for p in ([train], [SpikeEvent(1 // 3, 1)])
+                snap = population_spike_features(p; t_start = 0.0, t_end = 1 / 3)
+                @test snap.total_spike_count == 1
+                @test unit_firing_rates(p; t_start = 0.0, t_end = 1 / 3)[1].spike_count == 1
+            end
+            # the same edge on the lower bound
+            @test population_spike_features([train]; t_start = 1 / 3, t_end = 1.0).total_spike_count ==
+                  1
+
+            # exact bounds still compare the stored values: the Float64
+            # instant below the rational bound stays in, a rational instant
+            # strictly above it stays out
+            @test population_spike_features(
+                [SpikeEvent(1 / 3, 1)];
+                t_start = 0,
+                t_end = 1 // 3,
+            ).total_spike_count == 1
+            @test population_spike_features(
+                [SpikeEvent(1 // 3 + big(1) // big(10)^30, 1)];
+                t_start = 0,
+                t_end = 1 // 3,
+            ).total_spike_count == 0
+        end
+
+        @testset "train and event overloads count identical windows" begin
+            # Float64() rounds numerator and denominator separately, so it
+            # can reverse the order of close rationals: these times are
+            # exactly increasing but their Float64 images swap
+            n = Int64(2)^53
+            times = Rational{Int64}[(n+6)//(n+5), (n+4)//(n+3)]
+            @test issorted(times)
+            @test Float64(times[1]) > Float64(times[2])
+            trs = SpikeTrain[SpikeTrain(1, times)]
+            evs = SpikeEvent[SpikeEvent(t, 1) for t in times]
+            for p in (trs, evs)
+                snap = population_spike_features(p; t_start = 0.0, t_end = 1.0)
+                @test snap.total_spike_count == 1
+            end
+
+            # one-sided exact windows search the sorted rational times
+            # directly: the omitted bound's ±Inf sentinel must not force a
+            # misordered Float64-image scan
+            for p in (trs, evs)
+                @test population_spike_features(p; t_end = times[1]).total_spike_count == 1
+                @test population_spike_features(p; t_start = times[2]).total_spike_count ==
+                      1
+                @test population_spike_features(p; t_end = times[2]).total_spike_count == 2
+            end
+
+            # Float64(b-1) rounds up to Float64(b): the exact window is
+            # inverted even though the spike meets each converted bound
+            b = 1_700_000_000_000_000_000
+            @test Float64(b - 1) == Float64(b)
+            for p in (SpikeEvent[SpikeEvent(b - 1, 1)], SpikeTrain[SpikeTrain(1, [b - 1])])
+                snap = population_spike_features(p; t_start = Float64(b), t_end = b - 1)
+                @test snap.total_spike_count == 0
+                # the unit is still observed even with nothing counted
+                @test snap.n_observed_units == 1
+            end
+        end
+
+        @testset "high-precision bounds keep duration precision" begin
+            # BigFloat bounds closer than Float64 resolution: the window
+            # still contains a spike, so the rate must not be 0
+            b1 = big"1.0"
+            b2 = b1 + big"1e-70"
+            mid = b1 + big"5e-71"
+            for p in ([SpikeEvent(mid, 1)], [SpikeTrain(1, [mid])])
+                snap = population_spike_features(p; t_start = b1, t_end = b2)
+                @test snap.total_spike_count == 1
+                @test snap.duration == Float64(b2 - b1)
+                @test snap.duration > 0
+                @test snap.population_rate == 1 / snap.duration
+            end
+
+            # rational bounds below Float64 resolution keep an exact span
+            r1 = 1 // 3
+            r2 = r1 + big(1) // big(10)^40
+            snap = population_spike_features([SpikeEvent(r1, 1)]; t_start = r1, t_end = r2)
+            @test snap.total_spike_count == 1
+            @test snap.duration == 1e-40
+            @test snap.population_rate == 1 / snap.duration
+
+            # rational endpoints over huge integers keep their span too
+            b = 1_700_000_000_000_000_000
+            @test Float64(b // 1) == Float64((b + 100) // 1)
+            snap = population_spike_features(
+                [SpikeTrain(1, [b + 50])];
+                t_start = b // 1,
+                t_end = (b + 100) // 1,
+            )
+            @test snap.duration == 100.0
+            @test snap.population_rate ≈ 0.01
+        end
+
+        @testset "infinite bounds never make duration NaN" begin
+            # equal infinite bounds span a zero-length window — Inf - Inf
+            # would otherwise produce NaN, violating duration >= 0. Equal
+            # infinities across types (=== misses them) behave the same way.
+            for p in ([SpikeEvent(0.5, 1)], [SpikeTrain(1, [0.5])])
+                snap = population_spike_features(p; t_start = Inf, t_end = Inf)
+                @test snap.duration == 0.0
+                @test snap.total_spike_count == 0
+                snap = population_spike_features(p; t_start = -Inf, t_end = -Inf)
+                @test snap.duration == 0.0
+                @test snap.total_spike_count == 0
+                snap = population_spike_features(p; t_start = Inf, t_end = 5.0)
+                @test snap.duration == 0.0
+                snap = population_spike_features(p; t_start = -Inf, t_end = Inf)
+                @test snap.duration == Inf
+                for (a, b) in (
+                    (Inf32, Inf),
+                    (Inf, Inf32),
+                    (Float32(-Inf), -Inf),
+                    (big"Inf", Inf),
+                    (big"Inf", big"Inf"),
+                    (big"-Inf", big"-Inf"),
+                )
+                    snap = population_spike_features(p; t_start = a, t_end = b)
+                    @test snap.duration == 0.0
+                    @test !isnan(snap.population_rate)
+                end
+            end
+        end
+
+        @testset "duration ignores ambient BigFloat precision" begin
+            # at 8-bit ambient precision BigFloat() rounds both Float64
+            # endpoints to 1.0, so a BigFloat subtraction would report a
+            # zero duration for a window that still contains the spike
+            lo, hi = 1.0, 1.0 + 2.0^-10
+            ev = SpikeEvent(lo + 2.0^-11, 1)
+            for (a, b) in ((lo, hi), (1, hi), (lo, 1 + 1 // 1024), (1 // 1, hi))
+                snap = setprecision(BigFloat, 8) do
+                    population_spike_features([ev]; t_start = a, t_end = b)
+                end
+                @test snap.duration == 2.0^-10
+                @test snap.population_rate ≈ 2.0^10
+                @test snap.total_spike_count == 1
+            end
+
+            # differences needing more significant bits than the ambient
+            # precision still round correctly: Float64(::Rational{BigInt})
+            # would lose them converting through BigFloat
+            for (a, b, want) in (
+                (0, 257, 257.0),
+                (0, Int64(2)^53 + 3, Float64(Int64(2)^53 + 3)),
+                (1 // 7, 1024 // 7, Float64(1023 // 7)),
+                (1, 1 + 1 // 1023, Float64(1 // 1023)),
+            )
+                snap = setprecision(BigFloat, 8) do
+                    population_spike_features([ev]; t_start = a, t_end = b)
+                end
+                @test snap.duration == want
+                @test snap.population_rate ≈ 1 / want
+                @test snap.total_spike_count == 1
+                rates = setprecision(BigFloat, 8) do
+                    unit_firing_rates([ev]; t_start = a, t_end = b)
+                end
+                @test only(rates).firing_rate ≈ 1 / want
+            end
+        end
+
+        @testset "duration conversion covers the Float64 range" begin
+            # subnormal span: the smallest representable positive duration
+            snap = population_spike_features(
+                [SpikeEvent(5e-324, 1)];
+                t_start = 0.0,
+                t_end = 5e-324,
+            )
+            @test snap.duration == 5e-324
+            @test snap.total_spike_count == 1
+
+            # binade boundary: a span just below 2.0 rounds up through the
+            # top significand bit rather than truncating
+            snap = population_spike_features(
+                [SpikeEvent(1.0, 1)];
+                t_start = 0 // 1,
+                t_end = (big(2)^54 - 1) // big(2)^53,
+            )
+            @test snap.duration == 2.0
+            @test snap.total_spike_count == 1
+
+            # spans past binary64 overflow to +Inf; the same span inverted
+            # still clamps to 0
+            snap = population_spike_features(
+                [SpikeEvent(1.0, 1)];
+                t_start = -1.5e308,
+                t_end = 1.5e308,
+            )
+            @test snap.duration == Inf
+            @test snap.total_spike_count == 1
+            snap = population_spike_features(
+                [SpikeEvent(1.0, 1)];
+                t_start = 1.5e308,
+                t_end = -1.5e308,
+            )
+            @test snap.duration == 0.0
+            @test snap.total_spike_count == 0
+        end
+
+        @testset "omitted bounds never convert or scan timestamps" begin
+            # an omitted bound's ±Inf sentinel is internal — an exact-bound
+            # window over timestamps without a Float64 conversion must not
+            # reach for Float64 at all
+            n = 4096
+            ticks = CmpTick.(1:n)
+            trains = SpikeTrain[SpikeTrain(1, ticks)]
+            events = SpikeEvent[SpikeEvent(t, 1) for t in ticks]
+            for p in (events, trains)
+                @test population_spike_features(p; t_end = 2).total_spike_count == 2
+                @test population_spike_features(p; t_start = n - 1).total_spike_count == 2
+                @test only(unit_firing_rates(p; t_end = 2)).spike_count == 2
+            end
+            @test population_spike_features([SpikeEvent(CmpTick(1), 1)]; t_end = 2).total_spike_count ==
+                  1
+            @test population_spike_features([SpikeTrain(1, [CmpTick(1)])]; t_end = 2).duration ==
+                  0.0
+
+            # sorted trains take the binary-search path: ~log2(n) bound
+            # comparisons, not one per spike — a full predicate scan fails
+            TICK_BOUND_CMPS[] = 0
+            population_spike_features(trains; t_end = 2)
+            @test 0 < TICK_BOUND_CMPS[] <= 64
+            TICK_BOUND_CMPS[] = 0
+            population_spike_features(trains; t_start = n - 1)
+            @test 0 < TICK_BOUND_CMPS[] <= 64
+
+            # an explicitly float bound still uses the Float64-image domain
+            @test_throws MethodError population_spike_features(events; t_end = 2.0)
+        end
+
+        @testset "SpikeFeatureStream integration" begin
+            stream = SpikeFeatureStream(window = 0.1, step = 0.1, t_start = 0.0)
+            @test population_spike_features(stream) === nothing
+            @test unit_firing_rates(stream) === nothing
+
+            for ev in (SpikeEvent(0.21, 1), SpikeEvent(0.22, 2), SpikeEvent(0.23, 1))
+                push!(stream, ev)
+            end
+            snap = population_spike_features(stream)
+            @test snap isa PopulationFeatureSnapshot
+            @test snap.duration ≈ 0.1
+            @test snap.n_observed_units == 2
+            @test snap.n_active_units == 2
+            @test snap.total_spike_count == 3
+            @test snap.population_rate ≈ 30.0
+            @test snap.mean_unit_rate ≈ 15.0
+            @test snap.count_mean ≈ 1.5
+            @test snap.count_variance ≈ 0.25
+            @test snap.fano_factor ≈ 1 / 6
+
+            rates = unit_firing_rates(stream)
+            @test [r.neuron_id for r in rates] == [1, 2]
+            @test issorted([r.neuron_id for r in rates])
+            @test [r.spike_count for r in rates] == [2, 1]
+            @test rates[1].firing_rate ≈ 20.0
+            @test rates[2].firing_rate ≈ 10.0
+
+            # stream snapshot rows equal the equivalent batch window
+            batch = population_spike_features(
+                [SpikeEvent(0.21, 1), SpikeEvent(0.22, 2), SpikeEvent(0.23, 1)];
+                t_start = 0.2,
+                t_end = 0.3,
+            )
+            @test batch.total_spike_count == snap.total_spike_count
+            @test batch.count_mean ≈ snap.count_mean
+            @test batch.count_variance ≈ snap.count_variance
+
+            # n_total_units applies on the stream path too
+            wide = population_spike_features(stream; n_total_units = 10)
+            @test wide.n_total_units == 10
+            @test wide.active_fraction ≈ 2 / 10
         end
     end
 
